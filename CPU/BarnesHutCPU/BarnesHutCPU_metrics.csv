@@ -1,0 +1,2 @@
+timestamp,method,bodies,steps,threads,theta,total_time_ms,avg_step_time_ms,force_calculation_time_ms,tree_build_time_ms
+2025-04-20 12:12:15,CPU_Barnes_Hut,1000,100,56,0.5,1.10021,0.0110021,0.221372,0.845038

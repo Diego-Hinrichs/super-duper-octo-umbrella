@@ -1,0 +1,2 @@
+timestamp,method,bodies,steps,threads,total_time_ms,avg_step_time_ms,force_calculation_time_ms
+2025-04-20 12:08:51,CPU_Direct_Sum,1000,100,56,9.92958,0.0992958,9.92937
