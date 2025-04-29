@@ -1,3 +1,6 @@
 # Ignore all .csv and .txt files in the tree
 *.csv
 *.txt
+
+**/main
+*/*/main
