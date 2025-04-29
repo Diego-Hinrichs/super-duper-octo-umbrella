@@ -1,2 +1,0 @@
-timestamp,method,bodies,steps,block_size,theta,total_time_ms,avg_step_time_ms,force_calculation_time_ms,tree_build_time_ms
-2025-04-20 16:58:33,GPU_Barnes_Hut,10000000,100,256,0.5,154.291,1.54291,4.51152,148.159

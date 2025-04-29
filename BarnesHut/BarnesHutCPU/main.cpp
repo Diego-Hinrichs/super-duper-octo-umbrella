@@ -9,12 +9,9 @@
 #include <memory>
 #include <algorithm>
 #include <limits>
-#include <bitset>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>  // Para verificar/crear directorios
-#include <deque>
-#include <numeric>
 
 // =============================================================================
 // DEFINICIÓN DE TIPOS
@@ -68,12 +65,11 @@ struct Body {
     Vector acceleration;
     double mass;
     bool isDynamic;
-    uint64_t mortonCode; // Added for SFC ordering
 
-    Body() : mass(1.0), isDynamic(true), mortonCode(0) {}
+    Body() : mass(1.0), isDynamic(true) {}
     
     Body(const Vector& pos, const Vector& vel, double m, bool dynamic = true)
-        : position(pos), velocity(vel), acceleration(), mass(m), isDynamic(dynamic), mortonCode(0) {}
+        : position(pos), velocity(vel), acceleration(), mass(m), isDynamic(dynamic) {}
 };
 
 // =============================================================================
@@ -90,123 +86,26 @@ constexpr double THETA = 0.5;             // Barnes-Hut opening angle
 // DISTRIBUCIONES DE CUERPOS
 // =============================================================================
 
+enum class BodyDistribution {
+    RANDOM_UNIFORM,
+    SOLAR_SYSTEM,
+    GALAXY,
+    COLLISION
+};
+
 enum class MassDistribution {
     UNIFORM,
     NORMAL
 };
 
-enum class SFCOrderingMode {
-    PARTICLES  // Only particle ordering is supported
-};
+// =============================================================================
+// OCTREE
+// =============================================================================
 
-enum class SFCCurveType {
-    MORTON,
-    HILBERT
-};
-
-// Expands a 10-bit integer into 30 bits by inserting 2 zeros after each bit
-inline uint32_t expandBits(uint32_t v) {
-    v = (v * 0x00010001u) & 0xFF0000FFu;
-    v = (v * 0x00000101u) & 0x0F00F00Fu;
-    v = (v * 0x00000011u) & 0xC30C30C3u;
-    v = (v * 0x00000005u) & 0x49249249u;
-    return v;
-}
-
-// Rotate/flip a quadrant appropriately for Hilbert curve
-inline void rotateHilbert(uint32_t n, uint32_t *x, uint32_t *y, uint32_t *z, uint32_t rx, uint32_t ry, uint32_t rz) {
-    if (ry == 0) {
-        if (rz == 1) {
-            *x = n - 1 - *x;
-            *z = n - 1 - *z;
-        }
-
-        // Swap x and z
-        uint32_t t = *x;
-        *x = *z;
-        *z = t;
-    }
-    
-    if (rx == 1) {
-        *y = n - 1 - *y;
-        *z = n - 1 - *z;
-    }
-}
-
-// Convert (x,y,z) to Hilbert distance (d)
-inline uint64_t hilbertXYZToIndex(uint32_t n, uint32_t x, uint32_t y, uint32_t z) {
-    uint64_t index = 0;
-    uint32_t rx, ry, rz, s;
-    
-    for (s = n / 2; s > 0; s /= 2) {
-        rx = (x & s) > 0;
-        ry = (y & s) > 0;
-        rz = (z & s) > 0;
-        
-        index += s * s * s * ((3 * rx) ^ (2 * ry) ^ rz);
-        
-        rotateHilbert(s * 2, &x, &y, &z, rx, ry, rz);
-    }
-    
-    return index;
-}
-
-// Calculate Hilbert code for 3D point
-inline uint64_t calculateHilbertCode(double x, double y, double z,
-                                     double minX, double minY, double minZ,
-                                     double maxX, double maxY, double maxZ) {
-    // Normalize coordinates to [0,1]
-    double normalizedX = (x - minX) / (maxX - minX);
-    double normalizedY = (y - minY) / (maxY - minY);
-    double normalizedZ = (z - minZ) / (maxZ - minZ);
-    
-    // Clamp to [0,1]
-    normalizedX = std::max(0.0, std::min(normalizedX, 1.0));
-    normalizedY = std::max(0.0, std::min(normalizedY, 1.0));
-    normalizedZ = std::max(0.0, std::min(normalizedZ, 1.0));
-    
-    // Convert to integer coordinates (using 10 bits per dimension)
-    uint32_t intX = static_cast<uint32_t>(normalizedX * 1023.0);
-    uint32_t intY = static_cast<uint32_t>(normalizedY * 1023.0);
-    uint32_t intZ = static_cast<uint32_t>(normalizedZ * 1023.0);
-    
-    // Calculate Hilbert code
-    return hilbertXYZToIndex(1024, intX, intY, intZ);
-}
-
-// Calculates the Morton code for a 3D point
-inline uint64_t calculateMortonCode(double x, double y, double z, 
-                                   double minX, double minY, double minZ, 
-                                   double maxX, double maxY, double maxZ) {
-    // Normalize coordinates to [0,1]
-    double normalizedX = (x - minX) / (maxX - minX);
-    double normalizedY = (y - minY) / (maxY - minY);
-    double normalizedZ = (z - minZ) / (maxZ - minZ);
-    
-    // Clamp to [0,1]
-    normalizedX = std::max(0.0, std::min(normalizedX, 1.0));
-    normalizedY = std::max(0.0, std::min(normalizedY, 1.0));
-    normalizedZ = std::max(0.0, std::min(normalizedZ, 1.0));
-    
-    // Convert to integer coordinates (using 10 bits per dimension)
-    uint32_t intX = static_cast<uint32_t>(normalizedX * 1023.0);
-    uint32_t intY = static_cast<uint32_t>(normalizedY * 1023.0);
-    uint32_t intZ = static_cast<uint32_t>(normalizedZ * 1023.0);
-    
-    // Expand bits to create Morton code
-    uint64_t morton = 0;
-    morton |= expandBits(intX);
-    morton |= expandBits(intY) << 1;
-    morton |= expandBits(intZ) << 2;
-    
-    return morton;
-}
-
-// Node structure for Barnes-Hut octree
 struct CPUOctreeNode {
-    Vector center;     // Center of this node
-    double halfWidth;  // Half width of this node
-    
+    Vector center;    // Center of this node's region
+    double halfWidth; // Half width of this node's region
+
     bool isLeaf;   // Whether this is a leaf node
     int bodyIndex; // Index of the body if this is a leaf
 
@@ -274,196 +173,11 @@ struct CPUOctreeNode {
     }
 };
 
-class SFCDynamicReorderingStrategy
-{
-private:
-    // Parameters for the optimization formula
-    double reorderTime;        // Time to reorder (equivalent to Rt)
-    double postReorderSimTime; // Simulation time right after reordering (equivalent to Rq)
-    double updateTime;         // Time to update without reordering (equivalent to Ut, typically 0 for SFC)
-    double degradationRate;    // Average performance degradation per iteration (equivalent to dQ)
-
-    int iterationsSinceReorder;  // Counter for iterations since last reorder
-    int currentOptimalFrequency; // Current calculated optimal frequency
-
-    // Tracking metrics for dynamic calculation
-    int metricsWindowSize;
-    std::deque<double> reorderTimeHistory;
-    std::deque<double> postReorderSimTimeHistory;
-    std::deque<double> simulationTimeHistory;
-
-    // Calculate the optimal reordering frequency
-    int computeOptimalFrequency(int totalIterations)
-    {
-        // Using the formula: ((nU*nU*dQ/2) + nU*(Ut+Rq) + (Rt+Rq)) * Nit/(nU+1)
-        // The optimal frequency is where the derivative = 0
-
-        double determinant = 1.0 - 2.0 * (updateTime - reorderTime) / degradationRate;
-
-        // If determinant is negative, use a default value
-        if (determinant < 0)
-            return 10; // Default to 10 as a reasonable value
-
-        double optNu = -1.0 + sqrt(determinant);
-
-        // Convert to integer values and check which one is better
-        int nu1 = static_cast<int>(optNu);
-        int nu2 = nu1 + 1;
-
-        if (nu1 <= 0)
-            return 1; // Avoid negative or zero values
-
-        // Calculate total time with nu1 and nu2
-        double time1 = ((nu1 * nu1 * degradationRate / 2.0) + nu1 * (updateTime + postReorderSimTime) +
-                        (reorderTime + postReorderSimTime)) *
-                       totalIterations / (nu1 + 1.0);
-        double time2 = ((nu2 * nu2 * degradationRate / 2.0) + nu2 * (updateTime + postReorderSimTime) +
-                        (reorderTime + postReorderSimTime)) *
-                       totalIterations / (nu2 + 1.0);
-
-        return time1 < time2 ? nu1 : nu2;
-    }
-
-public:
-    SFCDynamicReorderingStrategy(int windowSize = 10)
-        : reorderTime(0.0),
-          postReorderSimTime(0.0),
-          updateTime(0.0),
-          degradationRate(0.001), // Initial small degradation assumption
-          iterationsSinceReorder(0),
-          currentOptimalFrequency(10), // Start with a reasonable default
-          metricsWindowSize(windowSize)
-    {
-    }
-
-    // Update metrics with new timing information
-    void updateMetrics(double newReorderTime, double newSimTime)
-    {
-        // Update reorder time if available
-        if (newReorderTime > 0)
-        {
-            reorderTimeHistory.push_back(newReorderTime);
-            if (reorderTimeHistory.size() > metricsWindowSize)
-            {
-                reorderTimeHistory.pop_front();
-            }
-
-            // Recalculate average reorder time
-            reorderTime = std::accumulate(reorderTimeHistory.begin(), reorderTimeHistory.end(), 0.0) /
-                          reorderTimeHistory.size();
-        }
-
-        // Track simulation times to calculate degradation
-        simulationTimeHistory.push_back(newSimTime);
-        if (simulationTimeHistory.size() > metricsWindowSize)
-        {
-            simulationTimeHistory.pop_front();
-        }
-
-        // If first simulation after reorder, update postReorderSimTime
-        if (iterationsSinceReorder == 1)
-        {
-            postReorderSimTimeHistory.push_back(newSimTime);
-            if (postReorderSimTimeHistory.size() > metricsWindowSize)
-            {
-                postReorderSimTimeHistory.pop_front();
-            }
-
-            postReorderSimTime = std::accumulate(postReorderSimTimeHistory.begin(),
-                                                 postReorderSimTimeHistory.end(), 0.0) /
-                                 postReorderSimTimeHistory.size();
-        }
-
-        // Calculate degradation rate if we have enough data
-        if (simulationTimeHistory.size() >= 3)
-        {
-            int n = std::min(5, static_cast<int>(simulationTimeHistory.size()));
-            double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-
-            for (int i = 0; i < n; i++)
-            {
-                double x = i;
-                double y = simulationTimeHistory[simulationTimeHistory.size() - n + i];
-                sumX += x;
-                sumY += y;
-                sumXY += x * y;
-                sumX2 += x * x;
-            }
-
-            // Calculate slope (degradation rate)
-            double slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
-            if (slope > 0)
-            {
-                degradationRate = slope;
-            }
-        }
-    }
-
-    // Check if reordering is needed based on current metrics
-    bool shouldReorder(double lastSimTime = 0.0, double lastReorderTime = 0.0)
-    {
-        iterationsSinceReorder++;
-
-        // Update metrics with new timing information
-        updateMetrics(lastReorderTime, lastSimTime);
-
-        // Recalculate optimal frequency periodically
-        if (iterationsSinceReorder % 10 == 0)
-        {
-            currentOptimalFrequency = computeOptimalFrequency(1000); // Assuming 1000 total iterations
-
-            // Ensure frequency is reasonable
-            currentOptimalFrequency = std::max(1, std::min(100, currentOptimalFrequency));
-        }
-
-        // Decide if we should reorder based on current counter and optimal frequency
-        bool shouldReorder = iterationsSinceReorder >= currentOptimalFrequency;
-
-        // Reset counter if reordering
-        if (shouldReorder)
-        {
-            iterationsSinceReorder = 0;
-        }
-
-        return shouldReorder;
-    }
-
-    void updateMetrics(double sortTime)
-    {
-        updateMetrics(sortTime, 0.0);
-    }
-
-    void setWindowSize(int windowSize)
-    {
-        if (windowSize > 0) {
-            metricsWindowSize = windowSize;
-        }
-    }
-
-    int getOptimalFrequency() const
-    {
-        return currentOptimalFrequency;
-    }
-
-    double getDegradationRate() const
-    {
-        return degradationRate;
-    }
-
-    void reset()
-    {
-        iterationsSinceReorder = 0;
-        reorderTimeHistory.clear();
-        postReorderSimTimeHistory.clear();
-        simulationTimeHistory.clear();
-    }
-};
-
 // =============================================================================
-// SIMULACIÓN BARNES-HUT CPU CON SPACE-FILLING CURVE ORDERING
+// SIMULACIÓN BARNES-HUT CPU
 // =============================================================================
 
-class SFCBarnesHut {
+class CPUBarnesHut {
 private:
     std::vector<Body> bodies;
     int nBodies;
@@ -473,7 +187,11 @@ private:
     double forceCalculationTime;
     double octreeTime;
     double bboxTime;
-    double sfcTime;
+    double potentialEnergy;
+    double kineticEnergy;
+    double totalEnergyAvg;
+    double potentialEnergyAvg;
+    double kineticEnergyAvg;
     
     // Octree
     std::unique_ptr<CPUOctreeNode> root;
@@ -482,75 +200,64 @@ private:
     Vector minBound;
     Vector maxBound;
     
-    // SFC configuration
-    SFCCurveType curveType;
-    int iterationCounter;
-    
-    // Dynamic reordering strategy
-    SFCDynamicReorderingStrategy reorderingStrategy;
-    
 public:
-    SFCBarnesHut(
+    CPUBarnesHut(
         int numBodies,
         bool useParallelization = true,
         int threads = 0,
+        BodyDistribution dist = BodyDistribution::RANDOM_UNIFORM,
         unsigned int seed = static_cast<unsigned int>(time(nullptr)),
-        MassDistribution massDist = MassDistribution::UNIFORM,
-        SFCCurveType sfcCurveType = SFCCurveType::MORTON
+        MassDistribution massDist = MassDistribution::UNIFORM
     ) : nBodies(numBodies), 
         useOpenMP(useParallelization), 
         totalTime(0.0), 
         forceCalculationTime(0.0),
         octreeTime(0.0),
         bboxTime(0.0),
-        sfcTime(0.0),
-        curveType(sfcCurveType),
-        iterationCounter(0),
-        reorderingStrategy(10) // Start with window size of 10
-    {
-        // Configure OpenMP
-        if (useOpenMP) {
-            if (threads <= 0) {
-                numThreads = omp_get_max_threads();
-            } else {
-                numThreads = threads;
-                omp_set_num_threads(numThreads);
-            }
+        potentialEnergy(0.0),
+        kineticEnergy(0.0),
+        totalEnergyAvg(0.0),
+        potentialEnergyAvg(0.0),
+        kineticEnergyAvg(0.0) {
+        
+        // Initialize thread count
+        if (threads <= 0) {
+            // Auto-detect number of available threads
+            numThreads = omp_get_max_threads();
         } else {
-            numThreads = 1;
+            numThreads = threads;
         }
         
-        // Setup vectors
+        // Initialize bodies based on the distribution
         bodies.resize(numBodies);
+        initializeBodies(dist, seed, massDist);
         
-        // Initialize random bodies
-        initRandomBodies(seed, massDist);
+        // Set initial bounds
+        minBound = Vector(std::numeric_limits<double>::max(),
+                          std::numeric_limits<double>::max(),
+                          std::numeric_limits<double>::max());
+        maxBound = Vector(std::numeric_limits<double>::lowest(),
+                          std::numeric_limits<double>::lowest(),
+                          std::numeric_limits<double>::lowest());
         
         // Log configuration
-        std::cout << "SFC Barnes-Hut Simulation created with " << numBodies << " bodies." << std::endl;
+        std::cout << "CPU Barnes-Hut Simulation created with " << numBodies << " bodies." << std::endl;
         if (useOpenMP) {
             std::cout << "OpenMP enabled with " << numThreads << " threads." << std::endl;
         } else {
             std::cout << "OpenMP disabled, using single-threaded mode." << std::endl;
         }
-        
-        std::string curveTypeStr = (curveType == SFCCurveType::MORTON) ? "MORTON" : "HILBERT";
-        
-        std::cout << "SFC Mode: PARTICLES with dynamic reordering"
-                  << ", Curve: " << curveTypeStr << std::endl;
     }
     
-    void initRandomBodies(unsigned int seed, MassDistribution massDist) {
+    void initializeBodies(BodyDistribution dist, unsigned int seed, MassDistribution massDist) {
         std::mt19937 rng(seed);
         std::uniform_real_distribution<double> posDistrib(-100.0, 100.0);
         std::uniform_real_distribution<double> velDistrib(-5.0, 5.0);
         std::normal_distribution<double> normalPosDistrib(0.0, 50.0);
         std::normal_distribution<double> normalVelDistrib(0.0, 2.5);
         
-        // Resize the bodies vector
-        bodies.resize(nBodies);
-        
-        // Initialize with random uniform distribution 
+        // Initialize with random uniform distribution regardless of requested distribution type
+        // This simplified version only supports random initialization for now
         for (int i = 0; i < nBodies; i++) {
             if (massDist == MassDistribution::UNIFORM) {
                 bodies[i].position = Vector(posDistrib(rng), posDistrib(rng), posDistrib(rng));
@@ -563,7 +270,6 @@ public:
             // Establecer masa 1.0 para todos los cuerpos
             bodies[i].mass = 1.0;
             bodies[i].isDynamic = true;
-            bodies[i].mortonCode = 0; // Will be calculated after bounding box is determined
         }
     }
     
@@ -664,67 +370,6 @@ public:
         
         auto end = std::chrono::high_resolution_clock::now();
         bboxTime = std::chrono::duration<double, std::milli>(end - start).count();
-    }
-    
-    void computeMortonCodes() {
-        auto start = std::chrono::high_resolution_clock::now();
-        
-        if (useOpenMP) {
-            #pragma omp parallel for
-            for (int i = 0; i < nBodies; i++) {
-                if (curveType == SFCCurveType::MORTON) {
-                    bodies[i].mortonCode = calculateMortonCode(
-                        bodies[i].position.x, bodies[i].position.y, bodies[i].position.z,
-                        minBound.x, minBound.y, minBound.z,
-                        maxBound.x, maxBound.y, maxBound.z
-                    );
-                } else { // HILBERT
-                    bodies[i].mortonCode = calculateHilbertCode(
-                        bodies[i].position.x, bodies[i].position.y, bodies[i].position.z,
-                        minBound.x, minBound.y, minBound.z,
-                        maxBound.x, maxBound.y, maxBound.z
-                    );
-                }
-            }
-        } else {
-            for (int i = 0; i < nBodies; i++) {
-                if (curveType == SFCCurveType::MORTON) {
-                    bodies[i].mortonCode = calculateMortonCode(
-                        bodies[i].position.x, bodies[i].position.y, bodies[i].position.z,
-                        minBound.x, minBound.y, minBound.z,
-                        maxBound.x, maxBound.y, maxBound.z
-                    );
-                } else { // HILBERT
-                    bodies[i].mortonCode = calculateHilbertCode(
-                        bodies[i].position.x, bodies[i].position.y, bodies[i].position.z,
-                        minBound.x, minBound.y, minBound.z,
-                        maxBound.x, maxBound.y, maxBound.z
-                    );
-                }
-            }
-        }
-        
-        auto end = std::chrono::high_resolution_clock::now();
-        sfcTime += std::chrono::duration<double, std::milli>(end - start).count();
-    }
-    
-    void sortBodiesBySFC() {
-        auto start = std::chrono::high_resolution_clock::now();
-        
-        // Sort bodies by their Morton codes
-        std::sort(bodies.begin(), bodies.end(), 
-            [](const Body& a, const Body& b) {
-                return a.mortonCode < b.mortonCode;
-            }
-        );
-        
-        auto end = std::chrono::high_resolution_clock::now();
-        sfcTime += std::chrono::duration<double, std::milli>(end - start).count();
-    }
-    
-    void reorderBodies() {
-        computeMortonCodes();
-        sortBodiesBySFC();
     }
     
     void buildOctree() {
@@ -978,73 +623,101 @@ public:
         forceCalculationTime = std::chrono::duration<double, std::milli>(end - start).count();
     }
     
+    void calculateEnergies() {
+        potentialEnergy = 0.0;
+        kineticEnergy = 0.0;
+        
+        // Calculate potential energy (direct method)
+        for (int i = 0; i < nBodies; i++) {
+            for (int j = i + 1; j < nBodies; j++) {
+                // Vector from body i to body j
+                Vector r = bodies[j].position - bodies[i].position;
+                
+                // Distance calculation with softening
+                double distSqr = r.lengthSquared() + (E * E);
+                double dist = sqrt(distSqr);
+                
+                // Skip if bodies are too close (collision)
+                if (dist < COLLISION_TH)
+                    continue;
+                
+                // Gravitational potential energy: -G * m1 * m2 / r
+                potentialEnergy -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
+            }
+        }
+        
+        // Calculate kinetic energy
+        for (int i = 0; i < nBodies; i++) {
+            if (!bodies[i].isDynamic)
+                continue;
+                
+            // Kinetic energy: 0.5 * m * v^2
+            double vSquared = bodies[i].velocity.lengthSquared();
+            kineticEnergy += 0.5 * bodies[i].mass * vSquared;
+        }
+    }
+
     void update() {
         auto start = std::chrono::high_resolution_clock::now();
         
-        // Temporary variables for timing
-        double lastSimTime = forceCalculationTime;
-        double lastReorderTime = sfcTime;
-        
-        // Check if we need to reorder bodies using SFC
-        bool shouldReorder = false;
-        // Always use dynamic reordering strategy
-        shouldReorder = reorderingStrategy.shouldReorder(lastSimTime, lastReorderTime);
-        
-        if (shouldReorder) {
-            reorderBodies();
-        }
-        
-        iterationCounter++;
-        computeBoundingBox();
-        computeMortonCodes();
+        // Compute bounding box, build octree, and compute forces
         buildOctree();
         computeForces();
         
+        // Calculate energies
+        calculateEnergies();
+        
         auto end = std::chrono::high_resolution_clock::now();
         totalTime = std::chrono::duration<double, std::milli>(end - start).count();
-        
-        // Always update reordering strategy with the latest timings
-        reorderingStrategy.updateMetrics(shouldReorder ? sfcTime : 0.0, forceCalculationTime);
     }
     
-    void printSFCConfiguration() const {
-        std::string curveStr = (curveType == SFCCurveType::MORTON) ? "Morton" : "Hilbert";
-        
-        std::cout << "SFC Configuration:" << std::endl;
-        std::cout << "  Mode:           PARTICLES" << std::endl;
-        std::cout << "  Curve Type:     " << curveStr << std::endl;
-        std::cout << "  Dynamic Reordering: Enabled" << std::endl;
-        std::cout << "  Current Optimal Frequency: " << reorderingStrategy.getOptimalFrequency() << std::endl;
-        std::cout << "  Degradation Rate:  " << std::fixed << std::setprecision(6) 
-                  << reorderingStrategy.getDegradationRate() << " ms/iter" << std::endl;
+    void printPerformanceMetrics() const {
+        std::cout << "Performance Metrics (ms):" << std::endl;
+        std::cout << "  Total time:           " << std::fixed << std::setprecision(3) << totalTime << std::endl;
+        std::cout << "  Bounding box:         " << std::fixed << std::setprecision(3) << bboxTime << std::endl;
+        std::cout << "  Octree construction:  " << std::fixed << std::setprecision(3) << octreeTime << std::endl;
+        std::cout << "  Force calculation:    " << std::fixed << std::setprecision(3) << forceCalculationTime << std::endl;
     }
     
     void run(int steps) {
-        std::cout << "Running SFC Barnes-Hut simulation for " << steps << " steps..." << std::endl;
+        std::cout << "Running CPU Barnes-Hut simulation for " << steps << " steps..." << std::endl;
         
         double totalSim = 0.0;
+        double totalPotentialEnergy = 0.0;
+        double totalKineticEnergy = 0.0;
+        
         for (int step = 0; step < steps; step++) {
             update();
             totalSim += totalTime;
+            totalPotentialEnergy += potentialEnergy;
+            totalKineticEnergy += kineticEnergy;
         }
+        
+        // Calculate average energies
+        potentialEnergyAvg = totalPotentialEnergy / steps;
+        kineticEnergyAvg = totalKineticEnergy / steps;
+        totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
         
         std::cout << "Simulation completed in " << totalSim << " ms." << std::endl;
         std::cout << "Average step time: " << totalSim / steps << " ms." << std::endl;
+        std::cout << "Average Energy Values:" << std::endl;
+        std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
+        std::cout << "  Kinetic Energy:   " << std::scientific << std::setprecision(6) << kineticEnergyAvg << std::endl;
+        std::cout << "  Total Energy:     " << std::scientific << std::setprecision(6) << totalEnergyAvg << std::endl;
     }
 
     double getTotalTime() const { return totalTime; }
     double getForceCalculationTime() const { return forceCalculationTime; }
     double getTreeBuildTime() const { return octreeTime; }
-    double getSortTime() const { return sfcTime; }
+    double getPotentialEnergy() const { return potentialEnergy; }
+    double getKineticEnergy() const { return kineticEnergy; }
+    double getTotalEnergy() const { return potentialEnergy + kineticEnergy; }
+    double getPotentialEnergyAvg() const { return potentialEnergyAvg; }
+    double getKineticEnergyAvg() const { return kineticEnergyAvg; }
+    double getTotalEnergyAvg() const { return totalEnergyAvg; }
     int getNumBodies() const { return nBodies; }
     int getNumThreads() const { return numThreads; }
     double getTheta() const { return THETA; }
-    int getSortType() const { return static_cast<int>(SFCOrderingMode::PARTICLES); }
-    bool isDynamicReordering() const { return true; }
-    int getOptimalReorderFrequency() const {
-        // Always use the dynamic reordering strategy's optimal frequency
-        return reorderingStrategy.getOptimalFrequency();
-    }
 };
 
 // =============================================================================
@@ -1107,7 +780,7 @@ void initializeCsv(const std::string& filename, bool append = false) {
     
     // Solo escribimos el encabezado si estamos creando un nuevo archivo
     if (!append) {
-        file << "timestamp,method,bodies,steps,threads,theta,sort_type,total_time_ms,avg_step_time_ms,force_calculation_time_ms,tree_build_time_ms,sort_time_ms" << std::endl;
+        file << "timestamp,method,bodies,steps,threads,theta,total_time_ms,avg_step_time_ms,force_calculation_time_ms,tree_build_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
     }
     
     file.close();
@@ -1119,11 +792,12 @@ void saveMetrics(const std::string& filename,
                 int steps, 
                 int threads,
                 double theta,
-                int sortType,
                 double totalTime, 
                 double forceCalculationTime,
                 double treeBuildTime,
-                double sortTime) {
+                double potentialEnergy,
+                double kineticEnergy,
+                double totalEnergy) {
     std::ofstream file(filename, std::ios::app);
     if (!file.is_open()) {
         std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura." << std::endl;
@@ -1139,19 +813,21 @@ void saveMetrics(const std::string& filename,
     double avgTimePerStep = totalTime / steps;
     
     file << timestamp.str() << ","
-         << "CPU_SFC_Barnes_Hut" << ","
+         << "CPU_Barnes_Hut" << ","
          << bodies << ","
          << steps << ","
          << threads << ","
          << theta << ","
-         << sortType << ","
          << totalTime << ","
          << avgTimePerStep << ","
          << forceCalculationTime << ","
          << treeBuildTime << ","
-         << sortTime << std::endl;
+         << potentialEnergy << ","
+         << kineticEnergy << ","
+         << totalEnergy << std::endl;
     
     file.close();
+    std::cout << "Métricas guardadas en: " << filename << std::endl;
 }
 
 // =============================================================================
@@ -1162,13 +838,13 @@ int main(int argc, char* argv[]) {
     int nBodies = 1000;
     bool useOpenMP = true;
     int threads = 0; // Auto-detect
+    BodyDistribution dist = BodyDistribution::RANDOM_UNIFORM;
     MassDistribution massDist = MassDistribution::UNIFORM;
     int steps = 100;
-    SFCCurveType curveType = SFCCurveType::MORTON;
     
     // Añadir nuevas variables para métricas
     bool saveMetricsToFile = false;
-    std::string metricsFile = "./SFCBarnesHutCPU_metrics.csv";
+    std::string metricsFile = "./BarnesHutCPU_metrics.csv";
     
     // Parse command-line arguments
     for (int i = 1; i < argc; i++) {
@@ -1180,6 +856,17 @@ int main(int argc, char* argv[]) {
             useOpenMP = false;
         } else if (arg == "--threads" && i + 1 < argc) {
             threads = std::stoi(argv[++i]);
+        } else if (arg == "--distribution" && i + 1 < argc) {
+            std::string distStr = argv[++i];
+            if (distStr == "random") {
+                dist = BodyDistribution::RANDOM_UNIFORM;
+            } else if (distStr == "solar") {
+                dist = BodyDistribution::SOLAR_SYSTEM;
+            } else if (distStr == "galaxy") {
+                dist = BodyDistribution::GALAXY;
+            } else if (distStr == "collision") {
+                dist = BodyDistribution::COLLISION;
+            }
         } else if (arg == "--mass" && i + 1 < argc) {
             std::string massStr = argv[++i];
             if (massStr == "uniform") {
@@ -1189,13 +876,6 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--steps" && i + 1 < argc) {
             steps = std::stoi(argv[++i]);
-        } else if (arg == "--sfc-curve" && i + 1 < argc) {
-            std::string curveStr = argv[++i];
-            if (curveStr == "morton") {
-                curveType = SFCCurveType::MORTON;
-            } else if (curveStr == "hilbert") {
-                curveType = SFCCurveType::HILBERT;
-            }
         } else if (arg == "--save-metrics") {
             saveMetricsToFile = true;
         } else if (arg == "--metrics-file" && i + 1 < argc) {
@@ -1206,29 +886,32 @@ int main(int argc, char* argv[]) {
             std::cout << "  -n N          Set number of bodies (default: 1000)" << std::endl;
             std::cout << "  --no-openmp         Disable OpenMP parallelization" << std::endl;
             std::cout << "  --threads N         Set number of threads (default: auto)" << std::endl;
+            std::cout << "  --distribution TYPE Set body distribution (random, solar, galaxy, collision)" << std::endl;
             std::cout << "  --mass TYPE         Set mass distribution (uniform, normal)" << std::endl;
             std::cout << "  --steps N           Set simulation steps (default: 100)" << std::endl;
-            std::cout << "  --sfc-curve CURVE   Set SFC curve type (morton, hilbert)" << std::endl;
-            std::cout << "  --save-metrics      Save performance metrics to CSV" << std::endl;
-            std::cout << "  --metrics-file FILE Set metrics CSV file (default: metrics.csv)" << std::endl;
+            std::cout << "  --save-metrics      Save performance metrics to a CSV file" << std::endl;
+            std::cout << "  --metrics-file FILE Set the output CSV file (default: metrics.csv)" << std::endl;
             std::cout << "  --help              Show this help message" << std::endl;
             return 0;
         }
     }
     
-    SFCBarnesHut simulation(
+    // Create and run simulation
+    CPUBarnesHut simulation(
         nBodies, 
         useOpenMP, 
         threads, 
+        dist, 
         time(nullptr), 
-        massDist, 
-        curveType
+        massDist
     );
     
-    simulation.printSFCConfiguration();
     simulation.run(steps);
     
+    // Al final del main, añadir guardado de métricas
+    // Si se solicitó guardar métricas, inicializar el archivo CSV y guardar
     if (saveMetricsToFile) {
+        // Verificar si el archivo existe para decidir si añadir encabezados
         bool fileExists = false;
         std::ifstream checkFile(metricsFile);
         if (checkFile.good()) {
@@ -1243,11 +926,12 @@ int main(int argc, char* argv[]) {
             steps,
             simulation.getNumThreads(),
             simulation.getTheta(),
-            simulation.getSortType(),
             simulation.getTotalTime(),
             simulation.getForceCalculationTime(),
             simulation.getTreeBuildTime(),
-            simulation.getSortTime()
+            simulation.getPotentialEnergyAvg(),
+            simulation.getKineticEnergyAvg(),
+            simulation.getTotalEnergyAvg()
         );
         
         std::cout << "Métricas guardadas en: " << metricsFile << std::endl;

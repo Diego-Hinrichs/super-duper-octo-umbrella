@@ -6,12 +6,12 @@
 #include <random>
 #include <limits>
 #include <algorithm>
-#include <cfloat>  // Added for DBL_MAX
+#include <cfloat> // Added for DBL_MAX
 #include <fstream>
 #include <sstream>
 #include <iomanip>
 #include <chrono>
-#include <sys/stat.h>  // Para verificar/crear directorios
+#include <sys/stat.h> // Para verificar/crear directorios
 
 // =============================================================================
 // DEFINICIÓN DE TIPOS
@@ -106,11 +106,11 @@ struct Body
 
     // Default constructor
     __host__ __device__ Body() : isDynamic(true),
-                                mass(0.0),
-                                radius(0.0),
-                                position(),
-                                velocity(),
-                                acceleration() {}
+                                 mass(0.0),
+                                 radius(0.0),
+                                 position(),
+                                 velocity(),
+                                 acceleration() {}
 };
 
 /**
@@ -118,15 +118,15 @@ struct Body
  */
 struct Node
 {
-    bool isLeaf;        // Is this a leaf node?
+    bool isLeaf;         // Is this a leaf node?
     int firstChildIndex; // Index of first child (other 7 children follow consecutively)
-    int bodyIndex;      // Index of the body (if leaf)
-    int bodyCount;      // Number of bodies in this node
-    Vector position;    // Center of mass position
-    double mass;        // Total mass of the node
-    double radius;      // Half the width of the node
-    Vector min;         // Minimum coordinates of the node
-    Vector max;         // Maximum coordinates of the node
+    int bodyIndex;       // Index of the body (if leaf)
+    int bodyCount;       // Number of bodies in this node
+    Vector position;     // Center of mass position
+    double mass;         // Total mass of the node
+    double radius;       // Half the width of the node
+    Vector min;          // Minimum coordinates of the node
+    Vector max;          // Maximum coordinates of the node
 
     // Default constructor initializes to default values
     __host__ __device__ Node()
@@ -151,12 +151,14 @@ struct SimulationMetrics
     float buildTimeMs;
     float forceTimeMs;
     float totalTimeMs;
+    float energyCalculationTimeMs; // Added time for energy calculation
 
     SimulationMetrics() : resetTimeMs(0.0f),
                           bboxTimeMs(0.0f),
                           buildTimeMs(0.0f),
                           forceTimeMs(0.0f),
-                          totalTimeMs(0.0f) {}
+                          totalTimeMs(0.0f),
+                          energyCalculationTimeMs(0.0f) {}
 };
 
 // Enumeraciones para tipos de distribución
@@ -250,6 +252,33 @@ inline void checkLastCudaError(const char *const file, int line)
 // Macros to simplify error checking
 #define CHECK_CUDA_ERROR(err) checkCudaError(err, __func__, __FILE__, __LINE__)
 #define CHECK_LAST_CUDA_ERROR() checkLastCudaError(__FILE__, __LINE__)
+
+// Macro for calling a kernel CUDA with verification of errors
+#define CUDA_KERNEL_CALL(kernel, gridSize, blockSize, sharedMem, stream, ...) \
+    do                                                                        \
+    {                                                                         \
+        kernel<<<gridSize, blockSize, sharedMem, stream>>>(__VA_ARGS__);      \
+        CHECK_LAST_CUDA_ERROR();                                              \
+    } while (0)
+
+// Custom atomicAdd for double precision is only needed for compute capability < 6.0
+// CUDA 12.8 already includes this for newer architectures, so we need to conditionally compile
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
+__device__ double atomicAdd(double *address, double val)
+{
+    unsigned long long int *address_as_ull = (unsigned long long int *)address;
+    unsigned long long int old = *address_as_ull, assumed;
+
+    do
+    {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+
+    return __longlong_as_double(old);
+}
+#endif
 
 // =============================================================================
 // TIMER CLASS FOR PERFORMANCE MEASUREMENTS
@@ -411,12 +440,12 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
 
         // Create 8 children
         node.isLeaf = false;
-        int firstChildIdx = atomicAdd(&nodes[nNodes-1].bodyCount, 8); // Use the last node's bodyCount as a counter
-        
+        int firstChildIdx = atomicAdd(&nodes[nNodes - 1].bodyCount, 8); // Use the last node's bodyCount as a counter
+
         // Check if we have enough nodes
         if (firstChildIdx + 7 >= nNodes)
             return false;
-            
+
         node.firstChildIndex = firstChildIdx;
 
         // Move the existing body to the appropriate child
@@ -425,14 +454,17 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
 
         // Calculate center of node
         Vector center = node.position;
-        
+
         // Determine which octant the existing body belongs to
         Vector pos = bodies[existingBodyIdx].position;
         int childIdx = 0;
-        if (pos.x >= center.x) childIdx |= 1;
-        if (pos.y >= center.y) childIdx |= 2;
-        if (pos.z >= center.z) childIdx |= 4;
-        
+        if (pos.x >= center.x)
+            childIdx |= 1;
+        if (pos.y >= center.y)
+            childIdx |= 2;
+        if (pos.z >= center.z)
+            childIdx |= 4;
+
         // Create the child nodes with appropriate bounds
         for (int i = 0; i < 8; i++)
         {
@@ -442,54 +474,66 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
             child.bodyIndex = -1;
             child.bodyCount = 0;
             child.mass = 0.0;
-            
+
             // Calculate min/max for this child
             Vector min = node.min;
             Vector max = node.max;
-            
+
             // Adjust bounds based on octant
-            if (i & 1) min.x = center.x; else max.x = center.x;
-            if (i & 2) min.y = center.y; else max.y = center.y;
-            if (i & 4) min.z = center.z; else max.z = center.z;
-            
+            if (i & 1)
+                min.x = center.x;
+            else
+                max.x = center.x;
+            if (i & 2)
+                min.y = center.y;
+            else
+                max.y = center.y;
+            if (i & 4)
+                min.z = center.z;
+            else
+                max.z = center.z;
+
             child.min = min;
             child.max = max;
             child.position = (min + max) * 0.5;
             child.radius = ((max - min) * 0.5).length();
         }
-        
+
         // Insert the existing body into the appropriate child
         InsertBody(nodes, bodies, existingBodyIdx, firstChildIdx + childIdx, nNodes, leafLimit);
     }
-    
+
     // Now determine which child the new body belongs to
     Vector pos = bodies[bodyIdx].position;
     Vector center = node.position;
-    
+
     int childIdx = 0;
-    if (pos.x >= center.x) childIdx |= 1;
-    if (pos.y >= center.y) childIdx |= 2;
-    if (pos.z >= center.z) childIdx |= 4;
-    
+    if (pos.x >= center.x)
+        childIdx |= 1;
+    if (pos.y >= center.y)
+        childIdx |= 2;
+    if (pos.z >= center.z)
+        childIdx |= 4;
+
     // Insert body into the appropriate child
     if (node.firstChildIndex >= 0 && node.firstChildIndex + childIdx < nNodes)
     {
         InsertBody(nodes, bodies, bodyIdx, node.firstChildIndex + childIdx, nNodes, leafLimit);
     }
-    
+
     // Update node's center of mass and total mass
     double totalMass = node.mass + bodies[bodyIdx].mass;
     Vector weightedPos = node.position * node.mass + bodies[bodyIdx].position * bodies[bodyIdx].mass;
-    
+
     if (totalMass > 0.0)
     {
         node.position = weightedPos * (1.0 / totalMass);
         node.mass = totalMass;
     }
-    
+
     // Increment body count
     node.bodyCount++;
-    
+
     return true;
 }
 
@@ -501,17 +545,17 @@ __global__ void ConstructOctTreeKernel(Node *nodes, Body *bodies, Body *bodyBuff
     // Use shared memory to track total mass and center of mass
     extern __shared__ double sharedMem[];
     double *totalMass = &sharedMem[0];
-    double3 *centerMass = (double3*)(totalMass + blockDim.x);
-    
+    double3 *centerMass = (double3 *)(totalMass + blockDim.x);
+
     // Get thread ID
     int i = threadIdx.x;
-    
+
     // Each thread processes multiple bodies
     for (int bodyIdx = i; bodyIdx < nBodies; bodyIdx += blockDim.x)
     {
         // Copy body to buffer (optional, helps with memory access patterns)
         bodyBuffer[bodyIdx] = bodies[bodyIdx];
-        
+
         // Insert body into the octree
         InsertBody(nodes, bodies, bodyIdx, rootIdx, nNodes, leafLimit);
     }
@@ -529,41 +573,41 @@ __global__ void ComputeForceKernel(Node *nodes, Body *bodies, int nNodes, int nB
     Vector acc(0.0, 0.0, 0.0);
     Vector pos = bodies[i].position;
     double bodyMass = bodies[i].mass;
-    
+
     // Process octree to compute forces
     // This uses a stack-based traversal to avoid recursion
     constexpr int MAX_STACK = 64;
     int stack[MAX_STACK];
     int stackSize = 0;
-    
+
     // Start with root node
     stack[stackSize++] = 0;
-    
+
     while (stackSize > 0)
     {
         // Pop node from stack
         int nodeIdx = stack[--stackSize];
         if (nodeIdx < 0 || nodeIdx >= nNodes)
             continue;
-        
+
         Node &node = nodes[nodeIdx];
-        
+
         // Skip empty nodes
         if (node.bodyCount == 0 || node.mass <= 0.0)
             continue;
-        
+
         // Calculate distance to node's center of mass
         Vector distVec = node.position - pos;
         double distSqr = distVec.lengthSquared() + E * E;
         double dist = sqrt(distSqr);
-        
+
         // Check if we can use this node as a whole (Barnes-Hut criterion)
         if (node.isLeaf || (node.radius / dist < theta))
         {
             // Don't apply force from the body to itself
             if (node.isLeaf && node.bodyIndex == i)
                 continue;
-                
+
             // Apply gravitational force
             if (dist >= COLLISION_TH)
             {
@@ -584,15 +628,80 @@ __global__ void ComputeForceKernel(Node *nodes, Body *bodies, int nNodes, int nB
             }
         }
     }
-    
+
     // Update acceleration
     bodies[i].acceleration = acc;
-    
+
     // Update velocity
     bodies[i].velocity = bodies[i].velocity + acc * DT;
-    
+
     // Update position
     bodies[i].position = bodies[i].position + bodies[i].velocity * DT;
+}
+
+// Kernel to calculate energy values
+__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy)
+{
+    // Shared memory to store partial energy sums for each thread
+    extern __shared__ double sharedEnergy[];
+    double *sharedPotential = sharedEnergy;
+    double *sharedKinetic = &sharedEnergy[blockDim.x];
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int tx = threadIdx.x;
+
+    // Initialize shared memory
+    sharedPotential[tx] = 0.0;
+    sharedKinetic[tx] = 0.0;
+
+    if (i < nBodies)
+    {
+        // Calculate kinetic energy for this body
+        if (bodies[i].isDynamic)
+        {
+            double vSquared = bodies[i].velocity.lengthSquared();
+            sharedKinetic[tx] = 0.5 * bodies[i].mass * vSquared;
+        }
+
+        // Calculate potential energy contribution for this body (direct method)
+        for (int j = i + 1; j < nBodies; j++)
+        {
+            // Vector from body i to body j
+            Vector r = bodies[j].position - bodies[i].position;
+
+            // Distance calculation with softening
+            double distSqr = r.lengthSquared() + (E * E);
+            double dist = sqrt(distSqr);
+
+            // Skip if bodies are too close (collision)
+            if (dist < COLLISION_TH)
+                continue;
+
+            // Gravitational potential energy: -G * m1 * m2 / r
+            sharedPotential[tx] -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
+        }
+    }
+
+    // Synchronize threads in the block
+    __syncthreads();
+
+    // Reduce within block using shared memory
+    for (int s = blockDim.x / 2; s > 0; s >>= 1)
+    {
+        if (tx < s)
+        {
+            sharedPotential[tx] += sharedPotential[tx + s];
+            sharedKinetic[tx] += sharedKinetic[tx + s];
+        }
+        __syncthreads();
+    }
+
+    // Let the first thread of each block write its result to global memory
+    if (tx == 0)
+    {
+        atomicAdd(d_potentialEnergy, sharedPotential[0]);
+        atomicAdd(d_kineticEnergy, sharedKinetic[0]);
+    }
 }
 
 // =============================================================================
@@ -600,90 +709,110 @@ __global__ void ComputeForceKernel(Node *nodes, Body *bodies, int nNodes, int nB
 // =============================================================================
 
 // Función para verificar si un directorio existe
-bool dirExists(const std::string& dirName) {
+bool dirExists(const std::string &dirName)
+{
     struct stat info;
     return stat(dirName.c_str(), &info) == 0 && (info.st_mode & S_IFDIR);
 }
 
 // Función para crear un directorio
-bool createDir(const std::string& dirName) {
-    #ifdef _WIN32
+bool createDir(const std::string &dirName)
+{
+#ifdef _WIN32
     int status = mkdir(dirName.c_str());
-    #else
+#else
     int status = mkdir(dirName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-    #endif
+#endif
     return status == 0;
 }
 
 // Función para asegurar que el directorio existe
-bool ensureDirExists(const std::string& dirPath) {
-    if (dirExists(dirPath)) {
+bool ensureDirExists(const std::string &dirPath)
+{
+    if (dirExists(dirPath))
+    {
         return true;
     }
-    
+
     std::cout << "Creando directorio: " << dirPath << std::endl;
-    if (createDir(dirPath)) {
+    if (createDir(dirPath))
+    {
         return true;
-    } else {
+    }
+    else
+    {
         std::cerr << "Error: No se pudo crear el directorio " << dirPath << std::endl;
         return false;
     }
 }
 
-void initializeCsv(const std::string& filename, bool append = false) {
+void initializeCsv(const std::string &filename, bool append = false)
+{
     // Extraer el directorio del nombre de archivo
     size_t pos = filename.find_last_of('/');
-    if (pos != std::string::npos) {
+    if (pos != std::string::npos)
+    {
         std::string dirPath = filename.substr(0, pos);
-        if (!ensureDirExists(dirPath)) {
+        if (!ensureDirExists(dirPath))
+        {
             std::cerr << "Error: No se puede crear el directorio para el archivo " << filename << std::endl;
             return;
         }
     }
-    
+
     std::ofstream file;
-    if (append) {
+    if (append)
+    {
         file.open(filename, std::ios::app);
-    } else {
+    }
+    else
+    {
         file.open(filename);
     }
-    
-    if (!file.is_open()) {
+
+    if (!file.is_open())
+    {
         std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura" << std::endl;
         return;
     }
-    
+
     // Solo escribimos el encabezado si estamos creando un nuevo archivo
-    if (!append) {
-        file << "timestamp,method,bodies,steps,block_size,theta,total_time_ms,avg_step_time_ms,force_calculation_time_ms,tree_build_time_ms" << std::endl;
+    if (!append)
+    {
+        file << "timestamp,method,bodies,steps,block_size,theta,total_time_ms,avg_step_time_ms,force_calculation_time_ms,tree_build_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
     }
-    
+
     file.close();
     std::cout << "Archivo CSV " << (append ? "actualizado" : "inicializado") << ": " << filename << std::endl;
 }
 
-void saveMetrics(const std::string& filename, 
-                int bodies, 
-                int steps, 
-                int blockSize,
-                float theta,
-                float totalTime, 
-                float forceCalculationTime,
-                float treeBuildTime) {
+void saveMetrics(const std::string &filename,
+                 int bodies,
+                 int steps,
+                 int blockSize,
+                 float theta,
+                 float totalTime,
+                 float forceCalculationTime,
+                 float treeBuildTime,
+                 double potentialEnergy,
+                 double kineticEnergy,
+                 double totalEnergy)
+{
     std::ofstream file(filename, std::ios::app);
-    if (!file.is_open()) {
+    if (!file.is_open())
+    {
         std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura." << std::endl;
         return;
     }
-    
+
     // Obtener timestamp actual
     auto now = std::chrono::system_clock::now();
     auto now_c = std::chrono::system_clock::to_time_t(now);
     std::stringstream timestamp;
     timestamp << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S");
-    
+
     float avgTimePerStep = totalTime / steps;
-    
+
     file << timestamp.str() << ","
          << "GPU_Barnes_Hut" << ","
          << bodies << ","
@@ -693,8 +822,11 @@ void saveMetrics(const std::string& filename,
          << totalTime << ","
          << avgTimePerStep << ","
          << forceCalculationTime << ","
-         << treeBuildTime << std::endl;
-    
+         << treeBuildTime << ","
+         << potentialEnergy << ","
+         << kineticEnergy << ","
+         << totalEnergy << std::endl;
+
     file.close();
     std::cout << "Métricas guardadas en: " << filename << std::endl;
 }
@@ -706,61 +838,72 @@ void saveMetrics(const std::string& filename,
 class BarnesHutGPU
 {
 private:
-    Body *h_bodies = nullptr;        // Host bodies
-    Body *d_bodies = nullptr;        // Device bodies
-    Body *d_bodiesBuffer = nullptr;  // Device buffer for bodies during tree construction
-    Node *h_nodes = nullptr;         // Host nodes
-    Node *d_nodes = nullptr;         // Device nodes
-    int *d_mutex = nullptr;          // Device mutex for tree construction
-    int nBodies;                     // Number of bodies
-    int nNodes;                      // Maximum number of octree nodes
-    int leafLimit;                   // Index limit for internal nodes
-    SimulationMetrics metrics;       // Performance metrics
+    Body *h_bodies = nullptr;       // Host bodies
+    Body *d_bodies = nullptr;       // Device bodies
+    Body *d_bodiesBuffer = nullptr; // Device buffer for bodies during tree construction
+    Node *h_nodes = nullptr;        // Host nodes
+    Node *d_nodes = nullptr;        // Device nodes
+    int *d_mutex = nullptr;         // Device mutex for tree construction
+    int nBodies;                    // Number of bodies
+    int nNodes;                     // Maximum number of octree nodes
+    int leafLimit;                  // Index limit for internal nodes
+    SimulationMetrics metrics;      // Performance metrics
+    double potentialEnergy;
+    double kineticEnergy;
+    double totalEnergyAvg;
+    double potentialEnergyAvg;
+    double kineticEnergyAvg;
+
+    // Device memory for energy calculations
+    double *d_potentialEnergy;
+    double *d_kineticEnergy;
+    double *h_potentialEnergy;
+    double *h_kineticEnergy;
 
     void initializeDistribution(BodyDistribution dist, MassDistribution massDist, unsigned int seed)
     {
         std::mt19937 gen(seed);
         std::uniform_real_distribution<double> pos_dist(-MAX_DIST, MAX_DIST);
         std::uniform_real_distribution<double> vel_dist(-1.0e3, 1.0e3);
-        std::normal_distribution<double> normal_pos_dist(0.0, MAX_DIST/2.0);
+        std::normal_distribution<double> normal_pos_dist(0.0, MAX_DIST / 2.0);
         std::normal_distribution<double> normal_vel_dist(0.0, 5.0e2);
-        
+
         // Initialize with random uniform distribution regardless of requested distribution type
         // This simplified version only supports random initialization for now
-        for (int i = 0; i < nBodies; i++) {
-            if (massDist == MassDistribution::UNIFORM) {
+        for (int i = 0; i < nBodies; i++)
+        {
+            if (massDist == MassDistribution::UNIFORM)
+            {
                 // Position
                 h_bodies[i].position = Vector(
                     CENTERX + pos_dist(gen),
                     CENTERY + pos_dist(gen),
-                    CENTERZ + pos_dist(gen)
-                );
-                
+                    CENTERZ + pos_dist(gen));
+
                 // Velocity
                 h_bodies[i].velocity = Vector(
                     vel_dist(gen),
                     vel_dist(gen),
-                    vel_dist(gen)
-                );
-            } else { // NORMAL distribution
+                    vel_dist(gen));
+            }
+            else
+            { // NORMAL distribution
                 // Position
                 h_bodies[i].position = Vector(
                     CENTERX + normal_pos_dist(gen),
                     CENTERY + normal_pos_dist(gen),
-                    CENTERZ + normal_pos_dist(gen)
-                );
-                
+                    CENTERZ + normal_pos_dist(gen));
+
                 // Velocity
                 h_bodies[i].velocity = Vector(
                     normal_vel_dist(gen),
                     normal_vel_dist(gen),
-                    normal_vel_dist(gen)
-                );
+                    normal_vel_dist(gen));
             }
-            
+
             // Mass always 1.0
             h_bodies[i].mass = 1.0;
-            h_bodies[i].radius = pow(h_bodies[i].mass / EARTH_MASS, 1.0/3.0) * (EARTH_DIA/2.0);
+            h_bodies[i].radius = pow(h_bodies[i].mass / EARTH_MASS, 1.0 / 3.0) * (EARTH_DIA / 2.0);
             h_bodies[i].isDynamic = true;
             h_bodies[i].acceleration = Vector(0, 0, 0);
         }
@@ -773,6 +916,93 @@ private:
             std::cerr << "Error: Device memory not allocated." << std::endl;
             std::exit(EXIT_FAILURE);
         }
+    }
+
+    void initializeEnergyData()
+    {
+        // Allocate host memory for energy calculations
+        h_potentialEnergy = new double[1];
+        h_kineticEnergy = new double[1];
+
+        // Allocate device memory for energy calculations
+        CHECK_CUDA_ERROR(cudaMalloc((void **)&d_potentialEnergy, sizeof(double)));
+        CHECK_CUDA_ERROR(cudaMalloc((void **)&d_kineticEnergy, sizeof(double)));
+    }
+
+    void cleanupEnergyData()
+    {
+        if (h_potentialEnergy != nullptr)
+        {
+            delete[] h_potentialEnergy;
+            h_potentialEnergy = nullptr;
+        }
+
+        if (h_kineticEnergy != nullptr)
+        {
+            delete[] h_kineticEnergy;
+            h_kineticEnergy = nullptr;
+        }
+
+        if (d_potentialEnergy != nullptr)
+        {
+            cudaFree(d_potentialEnergy);
+            d_potentialEnergy = nullptr;
+        }
+
+        if (d_kineticEnergy != nullptr)
+        {
+            cudaFree(d_kineticEnergy);
+            d_kineticEnergy = nullptr;
+        }
+    }
+
+    void calculateEnergies()
+    {
+        // Verify initialization
+        if (d_bodies == nullptr)
+        {
+            std::cerr << "Error: Device bodies not initialized in calculateEnergies" << std::endl;
+            return;
+        }
+
+        // Synchronize device before measuring time
+        cudaDeviceSynchronize();
+
+        // Measure execution time
+        CudaTimer timer(metrics.energyCalculationTimeMs);
+
+        // Reset energy values to zero
+        CHECK_CUDA_ERROR(cudaMemset(d_potentialEnergy, 0, sizeof(double)));
+        CHECK_CUDA_ERROR(cudaMemset(d_kineticEnergy, 0, sizeof(double)));
+
+        // Configure block size
+        int blockSize = g_blockSize;
+        // Ensure blockSize is a multiple of 32 (warp size)
+        blockSize = (blockSize / 32) * 32;
+        if (blockSize < 32)
+            blockSize = 32;
+        if (blockSize > 1024)
+            blockSize = 1024;
+
+        // Calculate grid size based on number of bodies
+        int gridSize = (nBodies + blockSize - 1) / blockSize;
+        if (gridSize < 1)
+            gridSize = 1;
+
+        // Calculate required shared memory size
+        size_t sharedMemSize = 2 * blockSize * sizeof(double); // For potential and kinetic energy
+
+        // Launch kernel with error checking
+        CUDA_KERNEL_CALL(CalculateEnergiesKernel, gridSize, blockSize, sharedMemSize, 0,
+                         d_bodies, nBodies, d_potentialEnergy, d_kineticEnergy);
+
+        // Copy results back to host
+        CHECK_CUDA_ERROR(cudaMemcpy(h_potentialEnergy, d_potentialEnergy, sizeof(double), cudaMemcpyDeviceToHost));
+        CHECK_CUDA_ERROR(cudaMemcpy(h_kineticEnergy, d_kineticEnergy, sizeof(double), cudaMemcpyDeviceToHost));
+
+        // Update class members
+        potentialEnergy = *h_potentialEnergy;
+        kineticEnergy = *h_kineticEnergy;
     }
 
 public:
@@ -789,7 +1019,7 @@ public:
             numBodies = 1;
 
         std::cout << "Barnes-Hut GPU Simulation created with " << numBodies << " bodies "
-                 << "and " << nNodes << " nodes." << std::endl;
+                  << "and " << nNodes << " nodes." << std::endl;
 
         // Allocate host memory
         h_bodies = new Body[nBodies];
@@ -806,6 +1036,9 @@ public:
 
         // Copy to device
         CHECK_CUDA_ERROR(cudaMemcpy(d_bodies, h_bodies, nBodies * sizeof(Body), cudaMemcpyHostToDevice));
+
+        // Initialize energy calculation data
+        initializeEnergyData();
     }
 
     ~BarnesHutGPU()
@@ -813,11 +1046,18 @@ public:
         // Free resources
         delete[] h_bodies;
         delete[] h_nodes;
-        
-        if (d_bodies) CHECK_CUDA_ERROR(cudaFree(d_bodies));
-        if (d_bodiesBuffer) CHECK_CUDA_ERROR(cudaFree(d_bodiesBuffer));
-        if (d_nodes) CHECK_CUDA_ERROR(cudaFree(d_nodes));
-        if (d_mutex) CHECK_CUDA_ERROR(cudaFree(d_mutex));
+
+        if (d_bodies)
+            CHECK_CUDA_ERROR(cudaFree(d_bodies));
+        if (d_bodiesBuffer)
+            CHECK_CUDA_ERROR(cudaFree(d_bodiesBuffer));
+        if (d_nodes)
+            CHECK_CUDA_ERROR(cudaFree(d_nodes));
+        if (d_mutex)
+            CHECK_CUDA_ERROR(cudaFree(d_mutex));
+
+        // Clean up energy calculation resources
+        cleanupEnergyData();
     }
 
     void resetOctree()
@@ -826,7 +1066,7 @@ public:
 
         int blockSize = g_blockSize;
         int numBlocks = (nNodes + blockSize - 1) / blockSize;
-        
+
         ResetKernel<<<numBlocks, blockSize>>>(d_nodes, d_mutex, nNodes, nBodies);
         CHECK_LAST_CUDA_ERROR();
     }
@@ -837,7 +1077,7 @@ public:
 
         int blockSize = g_blockSize;
         int gridSize = (nBodies + blockSize - 1) / blockSize;
-        
+
         // Calculate shared memory size (6 arrays of doubles, each of size blockSize)
         size_t sharedMemSize = 6 * blockSize * sizeof(double);
         ComputeBoundingBoxKernel<<<gridSize, blockSize, sharedMemSize>>>(d_nodes, d_bodies, d_mutex, nBodies);
@@ -847,13 +1087,13 @@ public:
     void constructOctree()
     {
         CudaTimer timer(metrics.buildTimeMs);
-        
+
         int blockSize = g_blockSize;
-        
+
         // Calculate shared memory size for the octree kernel
-        size_t sharedMemSize = blockSize * sizeof(double) +  // totalMass array
-                              blockSize * sizeof(double3);  // centerMass array
-                              
+        size_t sharedMemSize = blockSize * sizeof(double) + // totalMass array
+                               blockSize * sizeof(double3); // centerMass array
+
         ConstructOctTreeKernel<<<1, blockSize, sharedMemSize>>>(d_nodes, d_bodies, d_bodiesBuffer, 0, nNodes, nBodies, leafLimit);
         CHECK_LAST_CUDA_ERROR();
     }
@@ -864,7 +1104,7 @@ public:
 
         int blockSize = g_blockSize;
         int gridSize = (nBodies + blockSize - 1) / blockSize;
-        
+
         ComputeForceKernel<<<gridSize, blockSize>>>(d_nodes, d_bodies, nNodes, nBodies, leafLimit, g_theta);
         CHECK_LAST_CUDA_ERROR();
     }
@@ -872,17 +1112,19 @@ public:
     void update()
     {
         CudaTimer timer(metrics.totalTimeMs);
-        
+
         // Ensure initialization
         checkInitialization();
-        
+
         // Build octree
         resetOctree();
-        computeBoundingBox();
         constructOctree();
-        
+
         // Compute forces
         computeForces();
+
+        // Calculate energies
+        calculateEnergies();
     }
 
     void printPerformance()
@@ -901,30 +1143,87 @@ public:
         printf("Theta parameter: %.2f\n", g_theta);
 
         float totalTime = 0.0f;
+        double totalPotentialEnergy = 0.0;
+        double totalKineticEnergy = 0.0;
 
         for (int i = 0; i < numIterations; i++)
         {
             update();
             totalTime += metrics.totalTimeMs;
-
-            if (i % printFreq == 0 || i == numIterations - 1)
-            {
-                printf("Iteration %d/%d (%.1f%%)\n", i + 1, numIterations, (i + 1) * 100.0f / numIterations);
-                printPerformance();
-            }
+            totalPotentialEnergy += potentialEnergy;
+            totalKineticEnergy += kineticEnergy;
         }
 
-        printf("Simulation completed in %.3f ms (avg %.3f ms per iteration)\n", 
-              totalTime, totalTime / numIterations);
+        // Calculate average energies
+        double potentialEnergyAvg = totalPotentialEnergy / numIterations;
+        double kineticEnergyAvg = totalKineticEnergy / numIterations;
+        double totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
+
+        printf("Simulation completed in %.3f ms (avg %.3f ms per iteration)\n",
+               totalTime, totalTime / numIterations);
+        printf("Energy Values:\n");
+        printf("  Potential Energy: %.6e\n", potentialEnergyAvg);
+        printf("  Kinetic Energy:   %.6e\n", kineticEnergyAvg);
+        printf("  Total Energy:     %.6e\n", totalEnergyAvg);
+    }
+
+    void run(int steps)
+    {
+        std::cout << "Running Barnes-Hut GPU simulation for " << steps << " steps..." << std::endl;
+
+        // Variables for time measurement
+        float totalTime = 0.0f;
+        float minTime = std::numeric_limits<float>::max();
+        float maxTime = 0.0f;
+        double totalPotentialEnergy = 0.0;
+        double totalKineticEnergy = 0.0;
+
+        // Run simulation
+        for (int step = 0; step < steps; step++)
+        {
+            update();
+
+            // Update statistics
+            totalTime += metrics.totalTimeMs;
+            minTime = std::min(minTime, metrics.totalTimeMs);
+            maxTime = std::max(maxTime, metrics.totalTimeMs);
+            totalPotentialEnergy += potentialEnergy;
+            totalKineticEnergy += kineticEnergy;
+        }
+
+        // Calculate average energies
+        potentialEnergyAvg = totalPotentialEnergy / steps;
+        kineticEnergyAvg = totalKineticEnergy / steps;
+        totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
+
+        // Show statistics
+        std::cout << "Simulation complete." << std::endl;
+        std::cout << "Performance Summary:" << std::endl;
+        std::cout << "  Average time per step: " << totalTime / steps << " ms" << std::endl;
+        std::cout << "  Min time: " << minTime << " ms" << std::endl;
+        std::cout << "  Max time: " << maxTime << " ms" << std::endl;
+        std::cout << "  Build tree: " << metrics.buildTimeMs << " ms" << std::endl;
+        std::cout << "  Compute forces: " << metrics.forceTimeMs << " ms" << std::endl;
+        std::cout << "Average Energy Values:" << std::endl;
+        std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
+        std::cout << "  Kinetic Energy:   " << std::scientific << std::setprecision(6) << kineticEnergyAvg << std::endl;
+        std::cout << "  Total Energy:     " << std::scientific << std::setprecision(6) << totalEnergyAvg << std::endl;
     }
 
     // Getters para las métricas
     float getTotalTime() const { return metrics.totalTimeMs; }
     float getForceCalculationTime() const { return metrics.forceTimeMs; }
     float getTreeBuildTime() const { return metrics.buildTimeMs; }
+    float getEnergyCalculationTime() const { return metrics.energyCalculationTimeMs; }
     int getNumBodies() const { return nBodies; }
     int getBlockSize() const { return g_blockSize; }
     double getTheta() const { return g_theta; }
+    double getPotentialEnergy() const { return potentialEnergy; }
+    double getKineticEnergy() const { return kineticEnergy; }
+    double getTotalEnergy() const { return potentialEnergy + kineticEnergy; }
+    double getPotentialEnergyAvg() const { return potentialEnergyAvg; }
+    double getKineticEnergyAvg() const { return kineticEnergyAvg; }
+    double getTotalEnergyAvg() const { return totalEnergyAvg; }
 };
 
 // =============================================================================
@@ -993,10 +1292,12 @@ int main(int argc, char **argv)
             std::cout << "  -theta <float>    Barnes-Hut opening angle parameter (default: 0.5)" << std::endl;
             return 0;
         }
-        else if (arg == "--save-metrics") {
+        else if (arg == "--save-metrics")
+        {
             saveMetricsToFile = true;
-        } 
-        else if (arg == "--metrics-file" && i + 1 < argc) {
+        }
+        else if (arg == "--metrics-file" && i + 1 < argc)
+        {
             metricsFile = argv[++i];
         }
     }
@@ -1030,15 +1331,17 @@ int main(int argc, char **argv)
     simulation.runSimulation(numIterations);
 
     // Guardar métricas si se solicitó
-    if (saveMetricsToFile) {
+    if (saveMetricsToFile)
+    {
         // Comprobar si el archivo existe
         bool fileExists = false;
         std::ifstream checkFile(metricsFile);
-        if (checkFile.good()) {
+        if (checkFile.good())
+        {
             fileExists = true;
         }
         checkFile.close();
-        
+
         // Inicializar archivo CSV y guardar métrica
         initializeCsv(metricsFile, fileExists);
         saveMetrics(
@@ -1049,11 +1352,13 @@ int main(int argc, char **argv)
             simulation.getTheta(),
             simulation.getTotalTime(),
             simulation.getForceCalculationTime(),
-            simulation.getTreeBuildTime()
-        );
-        
+            simulation.getTreeBuildTime(),
+            simulation.getPotentialEnergyAvg(),
+            simulation.getKineticEnergyAvg(),
+            simulation.getTotalEnergyAvg());
+
         std::cout << "Métricas guardadas en: " << metricsFile << std::endl;
     }
 
     return 0;
-} 
+}

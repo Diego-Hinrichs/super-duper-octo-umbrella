@@ -345,6 +345,11 @@ private:
     double forceCalculationTime;
     double reorderTime;
     double bboxTime;
+    double potentialEnergy;
+    double kineticEnergy;
+    double totalEnergyAvg;
+    double potentialEnergyAvg;
+    double kineticEnergyAvg;
     
     bool useSFC;
     int reorderFrequency;
@@ -379,6 +384,11 @@ public:
         forceCalculationTime(0.0),
         reorderTime(0.0),
         bboxTime(0.0),
+        potentialEnergy(0.0),
+        kineticEnergy(0.0),
+        totalEnergyAvg(0.0),
+        potentialEnergyAvg(0.0),
+        kineticEnergyAvg(0.0),
         useSFC(enableSFC),
         reorderFrequency(reorderFreq),
         iterationCounter(0),
@@ -701,6 +711,40 @@ public:
         forceCalculationTime = std::chrono::duration<double, std::milli>(end - start).count();
     }
 
+    void calculateEnergies() {
+        potentialEnergy = 0.0;
+        kineticEnergy = 0.0;
+        
+        // Calculate potential energy
+        for (int i = 0; i < nBodies; i++) {
+            for (int j = i + 1; j < nBodies; j++) {
+                // Vector from body i to body j
+                Vector r = bodies[j].position - bodies[i].position;
+                
+                // Distance calculation with softening
+                double distSqr = r.lengthSquared() + (E * E);
+                double dist = sqrt(distSqr);
+                
+                // Skip if bodies are too close (collision)
+                if (dist < COLLISION_TH)
+                    continue;
+                
+                // Gravitational potential energy: -G * m1 * m2 / r
+                potentialEnergy -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
+            }
+        }
+        
+        // Calculate kinetic energy
+        for (int i = 0; i < nBodies; i++) {
+            if (!bodies[i].isDynamic)
+                continue;
+                
+            // Kinetic energy: 0.5 * m * v^2
+            double vSquared = bodies[i].velocity.lengthSquared();
+            kineticEnergy += 0.5 * bodies[i].mass * vSquared;
+        }
+    }
+
     void update() {
         auto start = std::chrono::high_resolution_clock::now();
         
@@ -732,6 +776,9 @@ public:
         // Compute forces and update positions
         computeForces();
         
+        // Calculate energies
+        calculateEnergies();
+        
         auto end = std::chrono::high_resolution_clock::now();
         totalTime = std::chrono::duration<double, std::milli>(end - start).count();
         
@@ -759,18 +806,34 @@ public:
         std::cout << "Running CPU SFC Direct Sum simulation for " << steps << " steps..." << std::endl;
         
         double totalSim = 0.0;
+        double totalPotentialEnergy = 0.0;
+        double totalKineticEnergy = 0.0;
+        
         for (int step = 0; step < steps; step++) {
             update();
             totalSim += totalTime;
-            
-            if (step % 10 == 0) {
-                std::cout << "Step " << step << " completed. ";
-                printPerformanceMetrics();
-            }
+            totalPotentialEnergy += potentialEnergy;
+            totalKineticEnergy += kineticEnergy;
         }
+        
+        // Calculate average energies
+        potentialEnergyAvg = totalPotentialEnergy / steps;
+        kineticEnergyAvg = totalKineticEnergy / steps;
+        totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
         
         std::cout << "Simulation completed in " << totalSim << " ms." << std::endl;
         std::cout << "Average step time: " << totalSim / steps << " ms." << std::endl;
+        std::cout << "Average Energy Values:" << std::endl;
+        std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
+        std::cout << "  Kinetic Energy:   " << std::scientific << std::setprecision(6) << kineticEnergyAvg << std::endl;
+        std::cout << "  Total Energy:     " << std::scientific << std::setprecision(6) << totalEnergyAvg << std::endl;
+        
+        if (useSFC && useDynamicReordering) {
+            std::cout << "SFC Configuration:" << std::endl;
+            std::cout << "  Optimal reorder freq: " << reorderingStrategy.getOptimalFrequency() << std::endl;
+            std::cout << "  Degradation rate:     " << std::fixed << std::setprecision(6) 
+                      << reorderingStrategy.getDegradationRate() << " ms/iter" << std::endl;
+        }
     }
 
     int getOptimalReorderFrequency() const {
@@ -787,6 +850,12 @@ public:
     int getNumThreads() const { return numThreads; }
     int getSortType() const { return static_cast<int>(useSFC); }
     bool isDynamicReordering() const { return useDynamicReordering; }
+    double getPotentialEnergy() const { return potentialEnergy; }
+    double getKineticEnergy() const { return kineticEnergy; }
+    double getTotalEnergy() const { return potentialEnergy + kineticEnergy; }
+    double getPotentialEnergyAvg() const { return potentialEnergyAvg; }
+    double getKineticEnergyAvg() const { return kineticEnergyAvg; }
+    double getTotalEnergyAvg() const { return totalEnergyAvg; }
 };
 
 // =============================================================================
@@ -849,7 +918,7 @@ void initializeCsv(const std::string& filename, bool append = false) {
     
     // Solo escribimos el encabezado si estamos creando un nuevo archivo
     if (!append) {
-        file << "timestamp,method,bodies,steps,threads,sort_type,total_time_ms,avg_step_time_ms,force_calculation_time_ms,sort_time_ms" << std::endl;
+        file << "timestamp,method,bodies,steps,threads,sort_type,total_time_ms,avg_step_time_ms,force_calculation_time_ms,sort_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
     }
     
     file.close();
@@ -863,7 +932,10 @@ void saveMetrics(const std::string& filename,
                 int sortType,
                 double totalTime, 
                 double forceCalculationTime,
-                double sortTime) {
+                double sortTime,
+                double potentialEnergy,
+                double kineticEnergy,
+                double totalEnergy) {
     std::ofstream file(filename, std::ios::app);
     if (!file.is_open()) {
         std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura." << std::endl;
@@ -887,7 +959,10 @@ void saveMetrics(const std::string& filename,
          << totalTime << ","
          << avgTimePerStep << ","
          << forceCalculationTime << ","
-         << sortTime << std::endl;
+         << sortTime << ","
+         << potentialEnergy << ","
+         << kineticEnergy << ","
+         << totalEnergy << std::endl;
     
     file.close();
     std::cout << "Métricas guardadas en: " << filename << std::endl;
@@ -963,8 +1038,6 @@ int main(int argc, char* argv[]) {
             std::cout << "  --mass TYPE         Set mass distribution (uniform, normal)" << std::endl;
             std::cout << "  --steps N           Set simulation steps (default: 100)" << std::endl;
             std::cout << "  --no-sfc            Disable Space-Filling Curve ordering" << std::endl;
-            std::cout << "  --reorder-freq N    [DEPRECATED] SFC reordering frequency is now dynamic" << std::endl;
-            std::cout << "  --dynamic-reordering [DEPRECATED] Dynamic reordering is enabled by default" << std::endl;
             std::cout << "  --save-metrics      Save metrics to CSV" << std::endl;
             std::cout << "  --metrics-file FILE Set metrics file (default: metrics.csv)" << std::endl;
             std::cout << "  --help              Show this help message" << std::endl;
@@ -1016,7 +1089,10 @@ int main(int argc, char* argv[]) {
             simulation.getSortType(),
             simulation.getTotalTime(),
             simulation.getForceCalculationTime(),
-            simulation.getSortTime()
+            simulation.getSortTime(),
+            simulation.getPotentialEnergy(),
+            simulation.getKineticEnergy(),
+            simulation.getTotalEnergy()
         );
         
         std::cout << "Métricas guardadas en: " << metricsFile << std::endl;

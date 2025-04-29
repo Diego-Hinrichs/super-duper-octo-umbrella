@@ -119,9 +119,11 @@ struct SimulationMetrics
 {
     float forceTimeMs;
     float totalTimeMs;
+    float energyCalculationTimeMs;  // Added time for energy calculation
 
     SimulationMetrics() : forceTimeMs(0.0f),
-                          totalTimeMs(0.0f) {}
+                          totalTimeMs(0.0f),
+                          energyCalculationTimeMs(0.0f) {}
 };
 
 // Enumeraciones para tipos de distribución
@@ -318,13 +320,31 @@ public:
 #define CHECK_CUDA_ERROR(val) checkCudaError((val), #val, __FILE__, __LINE__)
 #define CHECK_LAST_CUDA_ERROR() checkLastCudaError(__FILE__, __LINE__)
 
-// Macro para llamar a un kernel CUDA con verificación de errores
+// Macro for calling a kernel CUDA with verification of errors
 #define CUDA_KERNEL_CALL(kernel, gridSize, blockSize, sharedMem, stream, ...) \
     do                                                                        \
     {                                                                         \
         kernel<<<gridSize, blockSize, sharedMem, stream>>>(__VA_ARGS__);      \
         CHECK_LAST_CUDA_ERROR();                                              \
     } while (0) 
+
+// Custom atomicAdd for double precision is only needed for compute capability < 6.0
+// CUDA 12.8 already includes this for newer architectures, so we need to conditionally compile
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
+__device__ double atomicAdd(double* address, double val)
+{
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+
+    return __longlong_as_double(old);
+}
+#endif
 
 // =============================================================================
 // GUARDADO DE MÉTRICAS EN CSV
@@ -386,7 +406,7 @@ void initializeCsv(const std::string& filename, bool append = false) {
     
     // Solo escribimos el encabezado si estamos creando un nuevo archivo
     if (!append) {
-        file << "timestamp,method,bodies,steps,block_size,total_time_ms,avg_step_time_ms,force_calculation_time_ms,memory_transfer_time_ms" << std::endl;
+        file << "timestamp,method,bodies,steps,block_size,total_time_ms,avg_step_time_ms,force_calculation_time_ms,memory_transfer_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
     }
     
     file.close();
@@ -399,7 +419,10 @@ void saveMetrics(const std::string& filename,
                 int blockSize,
                 double totalTime, 
                 double forceCalculationTime,
-                double memoryTransferTime) {
+                double memoryTransferTime,
+                double potentialEnergy,
+                double kineticEnergy,
+                double totalEnergy) {
     std::ofstream file(filename, std::ios::app);
     if (!file.is_open()) {
         std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura." << std::endl;
@@ -422,7 +445,10 @@ void saveMetrics(const std::string& filename,
          << totalTime << ","
          << avgTimePerStep << ","
          << forceCalculationTime << ","
-         << memoryTransferTime << std::endl;
+         << memoryTransferTime << ","
+         << potentialEnergy << ","
+         << kineticEnergy << ","
+         << totalEnergy << std::endl;
     
     file.close();
     std::cout << "Métricas guardadas en: " << filename << std::endl;
@@ -733,6 +759,9 @@ void BodySystem::initUniformSphere(Vector centerPos, MassDistribution massDist)
 // Declaración adelantada del kernel
 __global__ void DirectSumForceKernel(Body *bodies, int nBodies);
 
+// Kernel to calculate energy values
+__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy);
+
 // Clase para gestionar la simulación DirectSum GPU
 class DirectSumGPU
 {
@@ -740,9 +769,23 @@ private:
     BodySystem *bodySystem;      // Pointer to the body system
     SimulationMetrics metrics;   // Performance metrics
     bool firstKernelLaunch;      // Control first kernel launch info
+    double potentialEnergy;
+    double kineticEnergy;
+    double totalEnergyAvg;
+    double potentialEnergyAvg;
+    double kineticEnergyAvg;
     
+    // Device memory for energy calculations
+    double *d_potentialEnergy;
+    double *d_kineticEnergy;
+    double *h_potentialEnergy;
+    double *h_kineticEnergy;
+
     // Compute forces and update positions
     void computeForces();
+    void calculateEnergies();
+    void initializeEnergyData();
+    void cleanupEnergyData();
 
 public:
     // Constructor
@@ -763,6 +806,13 @@ public:
     // Añadir estos getters
     double getTotalTime() const { return metrics.totalTimeMs; }
     double getForceCalculationTime() const { return metrics.forceTimeMs; }
+    double getEnergyCalculationTime() const { return metrics.energyCalculationTimeMs; }
+    double getPotentialEnergy() const { return potentialEnergy; }
+    double getKineticEnergy() const { return kineticEnergy; }
+    double getTotalEnergy() const { return potentialEnergy + kineticEnergy; }
+    double getPotentialEnergyAvg() const { return potentialEnergyAvg; }
+    double getKineticEnergyAvg() const { return kineticEnergyAvg; }
+    double getTotalEnergyAvg() const { return totalEnergyAvg; }
     int getBlockSize() const { return g_blockSize; }
     int getNumBodies() const { return bodySystem->getNumBodies(); }
 };
@@ -874,15 +924,87 @@ __global__ void DirectSumForceKernel(Body *bodies, int nBodies)
   }
 }
 
+// Kernel to calculate energy values
+__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy)
+{
+    // Shared memory to store partial energy sums for each thread
+    extern __shared__ double sharedEnergy[];
+    double *sharedPotential = sharedEnergy;
+    double *sharedKinetic = &sharedEnergy[blockDim.x];
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int tx = threadIdx.x;
+
+    // Initialize shared memory
+    sharedPotential[tx] = 0.0;
+    sharedKinetic[tx] = 0.0;
+
+    if (i < nBodies)
+    {
+        // Calculate kinetic energy for this body
+        if (bodies[i].isDynamic)
+        {
+            double vSquared = bodies[i].velocity.lengthSquared();
+            sharedKinetic[tx] = 0.5 * bodies[i].mass * vSquared;
+        }
+
+        // Calculate potential energy contribution for this body
+        for (int j = i + 1; j < nBodies; j++)
+        {
+            // Vector from body i to body j
+            Vector r = bodies[j].position - bodies[i].position;
+            
+            // Distance calculation with softening
+            double distSqr = r.lengthSquared() + (E * E);
+            double dist = sqrt(distSqr);
+            
+            // Skip if bodies are too close (collision)
+            if (dist < COLLISION_TH)
+                continue;
+            
+            // Gravitational potential energy: -G * m1 * m2 / r
+            sharedPotential[tx] -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
+        }
+    }
+
+    // Synchronize threads in the block
+    __syncthreads();
+
+    // Reduce within block using shared memory
+    for (int s = blockDim.x / 2; s > 0; s >>= 1)
+    {
+        if (tx < s)
+        {
+            sharedPotential[tx] += sharedPotential[tx + s];
+            sharedKinetic[tx] += sharedKinetic[tx + s];
+        }
+        __syncthreads();
+    }
+
+    // Let the first thread of each block write its result to global memory
+    if (tx == 0)
+    {
+        atomicAdd(d_potentialEnergy, sharedPotential[0]);
+        atomicAdd(d_kineticEnergy, sharedKinetic[0]);
+    }
+}
+
 // Constructor
 DirectSumGPU::DirectSumGPU(BodySystem *system)
-    : bodySystem(system), firstKernelLaunch(true)
+    : bodySystem(system), firstKernelLaunch(true), 
+      potentialEnergy(0.0), kineticEnergy(0.0), 
+      totalEnergyAvg(0.0), potentialEnergyAvg(0.0), kineticEnergyAvg(0.0),
+      d_potentialEnergy(nullptr), d_kineticEnergy(nullptr),
+      h_potentialEnergy(nullptr), h_kineticEnergy(nullptr)
 {
     if (!bodySystem->isInitialized())
     {
         std::cout << "Initializing body system..." << std::endl;
         bodySystem->setup();
     }
+    
+    // Initialize energy data
+    initializeEnergyData();
 }
 
 // Destructor
@@ -890,6 +1012,94 @@ DirectSumGPU::~DirectSumGPU()
 {
     // Asegurar que todos los recursos CUDA se liberan correctamente
     cudaDeviceSynchronize();
+    
+    // Clean up energy calculation resources
+    cleanupEnergyData();
+}
+
+// Initialize energy calculation data
+void DirectSumGPU::initializeEnergyData()
+{
+    // Allocate host memory for energy calculations
+    h_potentialEnergy = new double[1];
+    h_kineticEnergy = new double[1];
+    
+    // Allocate device memory for energy calculations
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_potentialEnergy, sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_kineticEnergy, sizeof(double)));
+}
+
+// Clean up energy calculation resources
+void DirectSumGPU::cleanupEnergyData()
+{
+    if (h_potentialEnergy != nullptr) {
+        delete[] h_potentialEnergy;
+        h_potentialEnergy = nullptr;
+    }
+    
+    if (h_kineticEnergy != nullptr) {
+        delete[] h_kineticEnergy;
+        h_kineticEnergy = nullptr;
+    }
+    
+    if (d_potentialEnergy != nullptr) {
+        cudaFree(d_potentialEnergy);
+        d_potentialEnergy = nullptr;
+    }
+    
+    if (d_kineticEnergy != nullptr) {
+        cudaFree(d_kineticEnergy);
+        d_kineticEnergy = nullptr;
+    }
+}
+
+// Calculate energies on GPU
+void DirectSumGPU::calculateEnergies()
+{
+    Body *d_bodies = bodySystem->getDeviceBodies();
+    int nBodies = bodySystem->getNumBodies();
+    
+    // Verify initialization
+    if (d_bodies == nullptr) {
+        std::cerr << "Error: Device bodies not initialized in calculateEnergies" << std::endl;
+        return;
+    }
+    
+    // Synchronize device before measuring time
+    cudaDeviceSynchronize();
+    
+    // Measure execution time
+    CudaTimer timer(metrics.energyCalculationTimeMs);
+    
+    // Reset energy values to zero
+    CHECK_CUDA_ERROR(cudaMemset(d_potentialEnergy, 0, sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMemset(d_kineticEnergy, 0, sizeof(double)));
+    
+    // Configure block size
+    int blockSize = g_blockSize;
+    // Ensure blockSize is a multiple of 32 (warp size)
+    blockSize = (blockSize / 32) * 32;
+    if (blockSize < 32) blockSize = 32;
+    if (blockSize > 1024) blockSize = 1024;
+    
+    // Calculate grid size based on number of bodies
+    int gridSize = (nBodies + blockSize - 1) / blockSize;
+    if (gridSize < 1) gridSize = 1;
+    
+    // Calculate required shared memory size
+    size_t sharedMemSize = 2 * blockSize * sizeof(double); // For potential and kinetic energy
+    
+    // Launch kernel with error checking
+    CUDA_KERNEL_CALL(CalculateEnergiesKernel, gridSize, blockSize, sharedMemSize, 0, 
+                     d_bodies, nBodies, d_potentialEnergy, d_kineticEnergy);
+    
+    // Copy results back to host
+    CHECK_CUDA_ERROR(cudaMemcpy(h_potentialEnergy, d_potentialEnergy, sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(h_kineticEnergy, d_kineticEnergy, sizeof(double), cudaMemcpyDeviceToHost));
+    
+    // Update class members
+    potentialEnergy = *h_potentialEnergy;
+    kineticEnergy = *h_kineticEnergy;
 }
 
 // Compute forces - implementación del método principal
@@ -956,6 +1166,9 @@ void DirectSumGPU::update()
     // Compute forces and update positions in one kernel
     computeForces();
     
+    // Calculate energy values
+    calculateEnergies();
+    
     // Sincronizar al final de la actualización
     cudaDeviceSynchronize();
 }
@@ -970,6 +1183,10 @@ void DirectSumGPU::run(int steps)
     float minTime = std::numeric_limits<float>::max();
     float maxTime = 0.0f;
     
+    // Variables para calcular energía promedio
+    double totalPotentialEnergy = 0.0;
+    double totalKineticEnergy = 0.0;
+    
     // Ejecutar simulación
     for (int step = 0; step < steps; step++)
     {
@@ -980,6 +1197,10 @@ void DirectSumGPU::run(int steps)
         minTime = std::min(minTime, metrics.totalTimeMs);
         maxTime = std::max(maxTime, metrics.totalTimeMs);
         
+        // Acumular energías
+        totalPotentialEnergy += potentialEnergy;
+        totalKineticEnergy += kineticEnergy;
+        
         // Mostrar progreso cada 10% o al menos cada 10 pasos
         if (step % std::max(steps / 10, 10) == 0 || step == steps - 1)
         {
@@ -987,6 +1208,11 @@ void DirectSumGPU::run(int steps)
                       << " - Time: " << metrics.totalTimeMs << " ms" << std::endl;
         }
     }
+    
+    // Calcular promedios de energía
+    potentialEnergyAvg = totalPotentialEnergy / steps;
+    kineticEnergyAvg = totalKineticEnergy / steps;
+    totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
     
     // Copiar resultados al host para verificación
     bodySystem->copyBodiesFromDevice();
@@ -996,6 +1222,10 @@ void DirectSumGPU::run(int steps)
     std::cout << "Average time per step: " << totalTime / steps << " ms" << std::endl;
     std::cout << "Min time: " << minTime << " ms" << std::endl;
     std::cout << "Max time: " << maxTime << " ms" << std::endl;
+    std::cout << "Average Energy Values:" << std::endl;
+    std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
+    std::cout << "  Kinetic Energy:   " << std::scientific << std::setprecision(6) << kineticEnergyAvg << std::endl;
+    std::cout << "  Total Energy:     " << std::scientific << std::setprecision(6) << totalEnergyAvg << std::endl;
 }
 
 // =============================================================================
@@ -1154,7 +1384,10 @@ int main(int argc, char **argv)
                 simulation.getBlockSize(),
                 simulation.getTotalTime(),
                 simulation.getForceCalculationTime(),
-                simulation.getTotalTime() - simulation.getForceCalculationTime()
+                simulation.getEnergyCalculationTime(),
+                simulation.getPotentialEnergyAvg(),
+                simulation.getKineticEnergyAvg(),
+                simulation.getTotalEnergyAvg()
             );
             
             std::cout << "Métricas guardadas en: " << metricsFile << std::endl;

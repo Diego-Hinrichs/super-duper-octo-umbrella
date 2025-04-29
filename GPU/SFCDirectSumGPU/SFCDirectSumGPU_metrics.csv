@@ -1,2 +1,0 @@
-timestamp,method,bodies,steps,block_size,sort_type,total_time_ms,avg_step_time_ms,force_calculation_time_ms,sort_time_ms
-2025-04-20 12:19:34,GPU_SFC_Direct_Sum,10000,100,256,0,31.8474,0.318474,31.8301,1.17043

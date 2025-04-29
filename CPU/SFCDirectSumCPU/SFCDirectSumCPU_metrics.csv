@@ -1,2 +1,0 @@
-timestamp,method,bodies,steps,threads,sort_type,total_time_ms,avg_step_time_ms,force_calculation_time_ms,sort_time_ms
-2025-04-20 12:14:05,CPU_SFC_Direct_Sum,1000,100,56,1,0.453189,0.00453189,0.453139,0.0336

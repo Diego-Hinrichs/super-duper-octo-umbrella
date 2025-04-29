@@ -1,2 +1,0 @@
-timestamp,method,bodies,steps,block_size,total_time_ms,avg_step_time_ms,force_calculation_time_ms,memory_transfer_time_ms
-2025-04-20 12:18:44,GPU_Direct_Sum,10000,100,256,32.441,0.32441,32.4219,0.0191383
