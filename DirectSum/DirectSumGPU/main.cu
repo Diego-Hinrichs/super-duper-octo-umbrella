@@ -75,12 +75,12 @@ struct Vector
 
 struct Body
 {
-    bool isDynamic;      // Whether the body moves or is static
-    double mass;         // Mass of the body
-    double radius;       // Radius of the body
-    Vector position;     // Position in 3D space
-    Vector velocity;     // Velocity vector
-    Vector acceleration; // Acceleration vector
+    bool isDynamic;
+    double mass;
+    double radius;
+    Vector position;
+    Vector velocity;
+    Vector acceleration;
 
     __host__ __device__ Body() : isDynamic(true),
                                  mass(0.0),
@@ -94,7 +94,7 @@ struct SimulationMetrics
 {
     float forceTimeMs;
     float totalTimeMs;
-    float energyCalculationTimeMs; // Added time for energy calculation
+    float energyCalculationTimeMs;
 
     SimulationMetrics() : forceTimeMs(0.0f),
                           totalTimeMs(0.0f),
@@ -112,18 +112,17 @@ enum class MassDistribution
     NORMAL
 };
 
-constexpr double GRAVITY = 6.67430e-11;        // Gravitational constant
-constexpr double SOFTENING_FACTOR = 0.5;       // Softening factor for avoiding div by 0
-constexpr double TIME_STEP = 25000.0;          // Time step in seconds
-constexpr double COLLISION_THRESHOLD = 1.0e10; // Collision threshold distance
+constexpr double GRAVITY = 6.67430e-11;
+constexpr double SOFTENING_FACTOR = 0.5;
+constexpr double TIME_STEP = 25000.0;
+constexpr double COLLISION_THRESHOLD = 1.0e10;
 
-constexpr double MAX_DIST = 5.0e11;     // Maximum distance for initial distribution
-constexpr double EARTH_MASS = 5.974e24; // Mass of Earth in kg
-constexpr double EARTH_DIA = 12756.0;   // Diameter of Earth in km
+constexpr double MAX_DIST = 5.0e11;
+constexpr double EARTH_MASS = 5.974e24;
+constexpr double EARTH_DIA = 12756.0;
 
-constexpr int DEFAULT_BLOCK_SIZE = 256; // Default CUDA block size
+constexpr int DEFAULT_BLOCK_SIZE = 256;
 
-// Definir macros para simplificar el código
 #define E SOFTENING_FACTOR
 #define DT TIME_STEP
 #define COLLISION_TH COLLISION_THRESHOLD
@@ -155,7 +154,6 @@ inline bool checkCudaAvailability()
 {
     std::cout << "Verificando disponibilidad de CUDA..." << std::endl;
 
-    // Intentar obtener información sobre la versión de CUDA
     int cudaRuntimeVersion = 0;
     cudaError_t verErr = cudaRuntimeGetVersion(&cudaRuntimeVersion);
     if (verErr == cudaSuccess)
@@ -169,7 +167,6 @@ inline bool checkCudaAvailability()
         std::cerr << "No se pudo obtener versión CUDA: " << cudaGetErrorString(verErr) << std::endl;
     }
 
-    // Verificar cuántos dispositivos CUDA están disponibles
     int deviceCount = 0;
     cudaError_t error = cudaGetDeviceCount(&deviceCount);
 
@@ -186,7 +183,6 @@ inline bool checkCudaAvailability()
         return false;
     }
 
-    // Imprimir información de las GPUs disponibles
     std::cout << "Se encontraron " << deviceCount << " dispositivos CUDA:" << std::endl;
     cudaDeviceProp deviceProp;
     for (int i = 0; i < deviceCount; i++)
@@ -205,7 +201,6 @@ inline bool checkCudaAvailability()
         std::cout << "  Tamaño máximo de bloque: " << deviceProp.maxThreadsPerBlock << std::endl;
     }
 
-    // Establecer dispositivo a utilizar (el primero por defecto)
     cudaError_t setErr = cudaSetDevice(0);
     if (setErr != cudaSuccess)
     {
@@ -213,7 +208,6 @@ inline bool checkCudaAvailability()
         return false;
     }
 
-    // Verificar memoria disponible
     size_t free, total;
     cudaMemGetInfo(&free, &total);
     std::cout << "Memoria GPU disponible: " << free / (1024 * 1024) << " MB de " << total / (1024 * 1024) << " MB" << std::endl;
@@ -222,7 +216,6 @@ inline bool checkCudaAvailability()
     return true;
 }
 
-// Clase para medir tiempo en CUDA
 class CudaTimer
 {
 private:
@@ -258,11 +251,9 @@ public:
     }
 };
 
-// Macros para verificación de errores
 #define CHECK_CUDA_ERROR(val) checkCudaError((val), #val, __FILE__, __LINE__)
 #define CHECK_LAST_CUDA_ERROR() checkLastCudaError(__FILE__, __LINE__)
 
-// Macro for calling a kernel CUDA with verification of errors
 #define CUDA_KERNEL_CALL(kernel, gridSize, blockSize, sharedMem, stream, ...) \
     do                                                                        \
     {                                                                         \
@@ -270,8 +261,6 @@ public:
         CHECK_LAST_CUDA_ERROR();                                              \
     } while (0)
 
-// Custom atomicAdd for double precision is only needed for compute capability < 6.0
-// CUDA 12.8 already includes this for newer architectures, so we need to conditionally compile
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
 __device__ double atomicAdd(double *address, double val)
 {
@@ -295,7 +284,6 @@ bool dirExists(const std::string &dirName)
     return stat(dirName.c_str(), &info) == 0 && (info.st_mode & S_IFDIR);
 }
 
-// Función para crear un directorio
 bool createDir(const std::string &dirName)
 {
 #ifdef _WIN32
@@ -306,7 +294,6 @@ bool createDir(const std::string &dirName)
     return status == 0;
 }
 
-// Función para asegurar que el directorio existe
 bool ensureDirExists(const std::string &dirPath)
 {
     if (dirExists(dirPath))
@@ -328,7 +315,7 @@ bool ensureDirExists(const std::string &dirPath)
 
 void initializeCsv(const std::string &filename, bool append = false)
 {
-    // Extraer el directorio del nombre de archivo
+
     size_t pos = filename.find_last_of('/');
     if (pos != std::string::npos)
     {
@@ -419,7 +406,6 @@ private:
     void initRandomBodies(Vector centerPos, MassDistribution massDist);
 
 public:
-    // Constructor
     BodySystem(int numBodies,
                BodyDistribution dist = BodyDistribution::RANDOM,
                unsigned int seed = static_cast<unsigned int>(time(nullptr)),
@@ -473,7 +459,6 @@ void BodySystem::setup()
     _isInitialized = true;
 }
 
-// Copy bodies from host to device
 void BodySystem::copyBodiesToDevice()
 {
     if (!d_bodies)
@@ -512,27 +497,25 @@ void BodySystem::initRandomBodies(Vector centerPos, MassDistribution massDist)
 
     for (int i = 0; i < nBodies; i++)
     {
-        // Position and velocity based on distribution
+
         if (massDist == MassDistribution::UNIFORM)
         {
-            // Position
+
             h_bodies[i].position.x = centerPos.x + posDist(gen);
             h_bodies[i].position.y = centerPos.y + posDist(gen);
             h_bodies[i].position.z = centerPos.z + posDist(gen);
 
-            // Velocity
             h_bodies[i].velocity.x = velDist(gen);
             h_bodies[i].velocity.y = velDist(gen);
             h_bodies[i].velocity.z = velDist(gen);
         }
         else
-        { // NORMAL distribution
-            // Position
+        {
+
             h_bodies[i].position.x = centerPos.x + normalPosDist(gen);
             h_bodies[i].position.y = centerPos.y + normalPosDist(gen);
             h_bodies[i].position.z = centerPos.z + normalPosDist(gen);
 
-            // Velocity
             h_bodies[i].velocity.x = normalVelDist(gen);
             h_bodies[i].velocity.y = normalVelDist(gen);
             h_bodies[i].velocity.z = normalVelDist(gen);
@@ -551,22 +534,20 @@ __global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_pot
 class DirectSumGPU
 {
 private:
-    BodySystem *bodySystem;    // Pointer to the body system
-    SimulationMetrics metrics; // Performance metrics
-    bool firstKernelLaunch;    // Control first kernel launch info
+    BodySystem *bodySystem;
+    SimulationMetrics metrics;
+    bool firstKernelLaunch;
     double potentialEnergy;
     double kineticEnergy;
     double totalEnergyAvg;
     double potentialEnergyAvg;
     double kineticEnergyAvg;
 
-    // Device memory for energy calculations
     double *d_potentialEnergy;
     double *d_kineticEnergy;
     double *h_potentialEnergy;
     double *h_kineticEnergy;
 
-    // Compute forces and update positions
     void computeForces();
     void calculateEnergies();
     void initializeEnergyData();
@@ -813,7 +794,7 @@ void DirectSumGPU::calculateEnergies()
     if (gridSize < 1)
         gridSize = 1;
 
-    size_t sharedMemSize = 2 * blockSize * sizeof(double); // For potential and kinetic energy
+    size_t sharedMemSize = 2 * blockSize * sizeof(double);
 
     CUDA_KERNEL_CALL(CalculateEnergiesKernel, gridSize, blockSize, sharedMemSize, 0,
                      d_bodies, nBodies, d_potentialEnergy, d_kineticEnergy);
@@ -882,39 +863,31 @@ void DirectSumGPU::run(int steps)
 {
     std::cout << "Running DirectSum GPU simulation for " << steps << " steps..." << std::endl;
 
-    // Variables para medir tiempo
     float totalTime = 0.0f;
     float minTime = std::numeric_limits<float>::max();
     float maxTime = 0.0f;
 
-    // Variables para calcular energía promedio
     double totalPotentialEnergy = 0.0;
     double totalKineticEnergy = 0.0;
 
-    // Ejecutar simulación
     for (int step = 0; step < steps; step++)
     {
         update();
 
-        // Actualizar estadísticas
         totalTime += metrics.totalTimeMs;
         minTime = std::min(minTime, metrics.totalTimeMs);
         maxTime = std::max(maxTime, metrics.totalTimeMs);
 
-        // Acumular energías
         totalPotentialEnergy += potentialEnergy;
         totalKineticEnergy += kineticEnergy;
     }
 
-    // Calcular promedios de energía
     potentialEnergyAvg = totalPotentialEnergy / steps;
     kineticEnergyAvg = totalKineticEnergy / steps;
     totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
 
-    // Copiar resultados al host para verificación
     bodySystem->copyBodiesFromDevice();
 
-    // Mostrar estadísticas
     std::cout << "Simulation complete." << std::endl;
     std::cout << "Average time per step: " << totalTime / steps << " ms" << std::endl;
     std::cout << "Min time: " << minTime << " ms" << std::endl;
