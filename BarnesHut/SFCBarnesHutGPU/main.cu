@@ -21,6 +21,7 @@
 __global__ void extractPositionsKernel(struct Body *bodies, struct Vector *positions, int n);
 __global__ void calculateSFCKeysKernel(struct Vector *positions, uint64_t *keys, int nBodies,
                                        struct Vector minBound, struct Vector maxBound, bool isHilbert);
+__global__ void extractPositionsAndCalculateKeysKernel(Body *bodies, uint64_t *keys, int nBodies, Vector minBound, Vector maxBound, bool isHilbert);
 
 struct Vector
 {
@@ -154,18 +155,11 @@ namespace sfc
     class BodySorter
     {
     public:
-        BodySorter(int numBodies, CurveType type) : nBodies(numBodies), curveType(type)
+        BodySorter(int numBodies, CurveType type) : nBodies(numBodies), curveType(type),
+                                                    d_temp_storage_initialized(false)
         {
-
             cudaMalloc(&d_orderedIndices, numBodies * sizeof(int));
-
             cudaMalloc(&d_keys, numBodies * sizeof(uint64_t));
-
-            h_keys = new uint64_t[numBodies];
-            h_indices = new int[numBodies];
-
-            cudaMalloc(&d_positions, numBodies * sizeof(Vector));
-            h_positions = new Vector[numBodies];
 
             cudaStreamCreate(&stream1);
             cudaStreamCreate(&stream2);
@@ -177,15 +171,8 @@ namespace sfc
                 cudaFree(d_orderedIndices);
             if (d_keys)
                 cudaFree(d_keys);
-            if (d_positions)
-                cudaFree(d_positions);
-
-            if (h_keys)
-                delete[] h_keys;
-            if (h_indices)
-                delete[] h_indices;
-            if (h_positions)
-                delete[] h_positions;
+            if (d_temp_storage && d_temp_storage_initialized)
+                cudaFree(d_temp_storage);
 
             cudaStreamDestroy(stream1);
             cudaStreamDestroy(stream2);
@@ -293,36 +280,74 @@ namespace sfc
             return result;
         }
 
+        // int *sortBodies(Body *d_bodies, const Vector &minBound, const Vector &maxBound)
+        // {
+
+        //     int blockSize = 256;
+        //     int gridSize = (nBodies + blockSize - 1) / blockSize;
+
+        //     extractPositionsKernel<<<gridSize, blockSize, 0, stream1>>>(d_bodies, d_positions, nBodies);
+
+        //     calculateSFCKeysKernel<<<gridSize, blockSize, 0, stream1>>>(
+        //         d_positions, d_keys, nBodies, minBound, maxBound, curveType == CurveType::HILBERT);
+
+        //     thrust::counting_iterator<int> first(0);
+        //     thrust::copy(first, first + nBodies, thrust::device_pointer_cast(d_orderedIndices));
+
+        //     void *d_temp_storage = NULL;
+        //     size_t temp_storage_bytes = 0;
+
+        //     cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes,
+        //                                     d_keys, d_keys,
+        //                                     d_orderedIndices, d_orderedIndices,
+        //                                     nBodies);
+
+        //     cudaMalloc(&d_temp_storage, temp_storage_bytes);
+
+        //     cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes,
+        //                                     d_keys, d_keys,
+        //                                     d_orderedIndices, d_orderedIndices,
+        //                                     nBodies);
+
+        //     cudaFree(d_temp_storage);
+
+        //     return d_orderedIndices;
+        // }
+
         int *sortBodies(Body *d_bodies, const Vector &minBound, const Vector &maxBound)
         {
-
             int blockSize = 256;
             int gridSize = (nBodies + blockSize - 1) / blockSize;
 
-            extractPositionsKernel<<<gridSize, blockSize, 0, stream1>>>(d_bodies, d_positions, nBodies);
+            // Usar el kernel combinado en lugar de los dos kernels separados
+            extractPositionsAndCalculateKeysKernel<<<gridSize, blockSize, 0, stream1>>>(
+                d_bodies, d_keys, nBodies, minBound, maxBound, curveType == CurveType::HILBERT);
 
-            calculateSFCKeysKernel<<<gridSize, blockSize, 0, stream1>>>(
-                d_positions, d_keys, nBodies, minBound, maxBound, curveType == CurveType::HILBERT);
-
+            // Inicializar índices secuenciales
             thrust::counting_iterator<int> first(0);
             thrust::copy(first, first + nBodies, thrust::device_pointer_cast(d_orderedIndices));
 
-            void *d_temp_storage = NULL;
-            size_t temp_storage_bytes = 0;
+            // Verificar si ya tenemos memoria temporal asignada
+            if (!d_temp_storage_initialized)
+            {
+                void *d_temp_storage = NULL;
+                size_t temp_storage_bytes = 0;
 
-            cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes,
+                cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes,
+                                                d_keys, d_keys,
+                                                d_orderedIndices, d_orderedIndices,
+                                                nBodies);
+
+                cudaMalloc(&d_temp_storage, temp_storage_bytes);
+                d_temp_storage_size = temp_storage_bytes;
+                d_temp_storage_initialized = true;
+            }
+
+            // Realizar el ordenamiento con la memoria ya asignada
+            cub::DeviceRadixSort::SortPairs(d_temp_storage, d_temp_storage_size,
                                             d_keys, d_keys,
                                             d_orderedIndices, d_orderedIndices,
                                             nBodies);
-
-            cudaMalloc(&d_temp_storage, temp_storage_bytes);
-
-            cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes,
-                                            d_keys, d_keys,
-                                            d_orderedIndices, d_orderedIndices,
-                                            nBodies);
-
-            cudaFree(d_temp_storage);
 
             return d_orderedIndices;
         }
@@ -334,10 +359,12 @@ namespace sfc
         uint64_t *d_keys = nullptr;
         uint64_t *h_keys = nullptr;
         int *h_indices = nullptr;
-
+        void *d_temp_storage = nullptr;
+        size_t d_temp_storage_size = 0;
+        bool d_temp_storage_initialized = false;
         Vector *d_positions = nullptr;
         Vector *h_positions = nullptr;
-
+        cudaStream_t stream;
         cudaStream_t stream1, stream2;
     };
 }
@@ -1663,6 +1690,187 @@ __global__ void calculateSFCKeysKernel(Vector *positions, uint64_t *keys, int nB
         }
     }
 
+    keys[i] = key;
+}
+
+__constant__ uint8_t d_hilbertMap[8][8] = {
+    {0, 1, 3, 2, 7, 6, 4, 5},
+    {4, 5, 7, 6, 0, 1, 3, 2},
+    {6, 7, 5, 4, 2, 3, 1, 0},
+    {2, 3, 1, 0, 6, 7, 5, 4},
+    {0, 7, 1, 6, 3, 4, 2, 5},
+    {6, 1, 7, 0, 5, 2, 4, 3},
+    {2, 5, 3, 4, 1, 6, 0, 7},
+    {4, 3, 5, 2, 7, 0, 6, 1}};
+
+__constant__ uint8_t d_nextState[8][8] = {
+    {0, 1, 3, 2, 7, 6, 4, 5},
+    {1, 0, 2, 3, 4, 5, 7, 6},
+    {2, 3, 1, 0, 5, 4, 6, 7},
+    {3, 2, 0, 1, 6, 7, 5, 4},
+    {4, 5, 7, 6, 0, 1, 3, 2},
+    {5, 4, 6, 7, 1, 0, 2, 3},
+    {6, 7, 5, 4, 2, 3, 1, 0},
+    {7, 6, 4, 5, 3, 2, 0, 1}};
+
+__global__ void extractPositionsAndCalculateKeysKernel(
+    Body *bodies,
+    uint64_t *keys,
+    int nBodies,
+    Vector minBound,
+    Vector maxBound,
+    bool isHilbert)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nBodies)
+        return;
+
+    // Extraer posición directamente del cuerpo
+    Vector pos = bodies[i].position;
+
+    // Precalcular los rangos inversos para evitar divisiones
+    double invRangeX = 1.0 / (maxBound.x - minBound.x);
+    double invRangeY = 1.0 / (maxBound.y - minBound.y);
+    double invRangeZ = 1.0 / (maxBound.z - minBound.z);
+
+    // Normalizar las coordenadas al rango [0,1)
+    double normalizedX = (pos.x - minBound.x) * invRangeX;
+    double normalizedY = (pos.y - minBound.y) * invRangeY;
+    double normalizedZ = (pos.z - minBound.z) * invRangeZ;
+
+    // Asegurar que están dentro del rango para evitar desbordamientos
+    normalizedX = fmax(0.0, fmin(0.999999, normalizedX));
+    normalizedY = fmax(0.0, fmin(0.999999, normalizedY));
+    normalizedZ = fmax(0.0, fmin(0.999999, normalizedZ));
+
+    // Convertir a enteros para el cálculo de claves
+    // Usar 20 bits para mayor precisión (1M valores)
+    const uint32_t MAX_COORD = (1 << 20) - 1;
+
+    uint32_t x = static_cast<uint32_t>(normalizedX * MAX_COORD);
+    uint32_t y = static_cast<uint32_t>(normalizedY * MAX_COORD);
+    uint32_t z = static_cast<uint32_t>(normalizedZ * MAX_COORD);
+
+    uint64_t key;
+
+    if (!isHilbert)
+    {
+        // Codificación Morton (Z-order) optimizada
+        // Método de dispersión de bits
+        x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
+        x = (x | (x << 8)) & 0x00FF00FF00FF00FF;
+        x = (x | (x << 4)) & 0x0F0F0F0F0F0F0F0F;
+        x = (x | (x << 2)) & 0x3333333333333333;
+        x = (x | (x << 1)) & 0x5555555555555555;
+
+        y = (y | (y << 16)) & 0x0000FFFF0000FFFF;
+        y = (y | (y << 8)) & 0x00FF00FF00FF00FF;
+        y = (y | (y << 4)) & 0x0F0F0F0F0F0F0F0F;
+        y = (y | (y << 2)) & 0x3333333333333333;
+        y = (y | (y << 1)) & 0x5555555555555555;
+
+        z = (z | (z << 16)) & 0x0000FFFF0000FFFF;
+        z = (z | (z << 8)) & 0x00FF00FF00FF00FF;
+        z = (z | (z << 4)) & 0x0F0F0F0F0F0F0F0F;
+        z = (z | (z << 2)) & 0x3333333333333333;
+        z = (z | (z << 1)) & 0x5555555555555555;
+
+        // Combinar los bits esparcidos
+        key = x | (y << 1) | (z << 2);
+    }
+    else
+    {
+        // Codificación de curva Hilbert usando tablas en memoria constante
+        uint8_t state = 0;
+        key = 0;
+
+        // Procesamiento por bits para los 16 bits más significativos
+        // para mantener la misma resolución que en tu implementación original
+        // pero optimizando con tablas precalculadas en memoria constante
+
+        // Comienza con el bit más significativo
+        {
+            uint8_t octant = 0;
+            if (x & 0x80000)
+                octant |= 1;
+            if (y & 0x80000)
+                octant |= 2;
+            if (z & 0x80000)
+                octant |= 4;
+
+            uint8_t position = d_hilbertMap[state][octant];
+            key = (key << 3) | position;
+            state = d_nextState[state][octant];
+        }
+
+        {
+            uint8_t octant = 0;
+            if (x & 0x40000)
+                octant |= 1;
+            if (y & 0x40000)
+                octant |= 2;
+            if (z & 0x40000)
+                octant |= 4;
+
+            uint8_t position = d_hilbertMap[state][octant];
+            key = (key << 3) | position;
+            state = d_nextState[state][octant];
+        }
+
+        {
+            uint8_t octant = 0;
+            if (x & 0x20000)
+                octant |= 1;
+            if (y & 0x20000)
+                octant |= 2;
+            if (z & 0x20000)
+                octant |= 4;
+
+            uint8_t position = d_hilbertMap[state][octant];
+            key = (key << 3) | position;
+            state = d_nextState[state][octant];
+        }
+
+        {
+            uint8_t octant = 0;
+            if (x & 0x10000)
+                octant |= 1;
+            if (y & 0x10000)
+                octant |= 2;
+            if (z & 0x10000)
+                octant |= 4;
+
+            uint8_t position = d_hilbertMap[state][octant];
+            key = (key << 3) | position;
+            state = d_nextState[state][octant];
+        }
+
+        // Procesar los siguientes bits en grupos de 4
+        // Para mantener un código más compacto y eficiente
+        for (int j = 0; j < 4; j++)
+        {
+            int shift = 12 - j * 4;
+
+            for (int b = 0; b < 4; b++)
+            {
+                uint8_t octant = 0;
+                uint32_t mask = 1 << (shift + b);
+
+                if (x & mask)
+                    octant |= 1;
+                if (y & mask)
+                    octant |= 2;
+                if (z & mask)
+                    octant |= 4;
+
+                uint8_t position = d_hilbertMap[state][octant];
+                key = (key << 3) | position;
+                state = d_nextState[state][octant];
+            }
+        }
+    }
+
+    // Guardar la clave calculada
     keys[i] = key;
 }
 

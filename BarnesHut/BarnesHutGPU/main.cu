@@ -611,7 +611,7 @@ private:
     int leafLimit;
     SimulationMetrics metrics;
 
-    void initializeDistribution(BodyDistribution dist, MassDistribution massDist, unsigned int seed)
+    void initRandomBodies(unsigned int seed, MassDistribution massDist = MassDistribution::UNIFORM)
     {
         std::mt19937 gen(seed);
         std::uniform_real_distribution<double> pos_dist(-MAX_DIST, MAX_DIST);
@@ -623,7 +623,6 @@ private:
         {
             if (massDist == MassDistribution::UNIFORM)
             {
-
                 h_bodies[i].position = Vector(
                     CENTERX + pos_dist(gen),
                     CENTERY + pos_dist(gen),
@@ -636,7 +635,6 @@ private:
             }
             else
             {
-
                 h_bodies[i].position = Vector(
                     CENTERX + normal_pos_dist(gen),
                     CENTERY + normal_pos_dist(gen),
@@ -688,7 +686,7 @@ public:
         CHECK_CUDA_ERROR(cudaMalloc(&d_nodes, nNodes * sizeof(Node)));
         CHECK_CUDA_ERROR(cudaMalloc(&d_mutex, nNodes * sizeof(int)));
 
-        initializeDistribution(dist, massDist, seed);
+        initRandomBodies(seed, massDist);
 
         CHECK_CUDA_ERROR(cudaMemcpy(d_bodies, h_bodies, nBodies * sizeof(Body), cudaMemcpyHostToDevice));
     }
@@ -851,6 +849,14 @@ int main(int argc, char **argv)
             blockSize = std::stoi(argv[++i]);
         else if (arg == "-theta" && i + 1 < argc)
             theta = std::stod(argv[++i]);
+        else if (arg == "--save-metrics")
+        {
+            saveMetricsToFile = true;
+        }
+        else if (arg == "--metrics-file" && i + 1 < argc)
+        {
+            metricsFile = argv[++i];
+        }
         else if (arg == "-h" || arg == "--help")
         {
             std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
@@ -863,14 +869,6 @@ int main(int argc, char **argv)
             std::cout << "  -block <num>      CUDA block size (default: 256)" << std::endl;
             std::cout << "  -theta <float>    Barnes-Hut opening angle parameter (default: 0.5)" << std::endl;
             return 0;
-        }
-        else if (arg == "--save-metrics")
-        {
-            saveMetricsToFile = true;
-        }
-        else if (arg == "--metrics-file" && i + 1 < argc)
-        {
-            metricsFile = argv[++i];
         }
     }
 
