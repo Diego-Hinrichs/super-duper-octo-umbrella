@@ -1,4 +1,4 @@
-# Makefile para compilar DirectSumGPU en un solo archivo
+# Makefile para compilar SFCBarnesHutGPU en un solo archivo
 
 # Compilador CUDA
 NVCC = nvcc

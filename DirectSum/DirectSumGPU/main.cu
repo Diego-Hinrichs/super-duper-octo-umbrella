@@ -5,12 +5,183 @@
 #include <string>
 #include <random>
 #include <limits>
+#include <algorithm>
 #include <vector>
 #include <chrono>
 #include <iomanip>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
+#include <deque>
+#include <numeric>
+
+class SFCDynamicReorderingStrategy
+{
+private:
+    double reorderTime;
+    double postReorderSimTime;
+    double updateTime;
+    double degradationRate;
+
+    int iterationsSinceReorder;
+    int currentOptimalFrequency;
+
+    int metricsWindowSize;
+    std::deque<double> reorderTimeHistory;
+    std::deque<double> postReorderSimTimeHistory;
+    std::deque<double> simulationTimeHistory;
+
+    int computeOptimalFrequency(int totalIterations)
+    {
+
+        double determinant = 1.0 - 2.0 * (updateTime - reorderTime) / degradationRate;
+
+        if (determinant < 0)
+            return 10;
+
+        double optNu = -1.0 + sqrt(determinant);
+
+        int nu1 = static_cast<int>(optNu);
+        int nu2 = nu1 + 1;
+
+        if (nu1 <= 0)
+            return 1;
+
+        double time1 = ((nu1 * nu1 * degradationRate / 2.0) + nu1 * (updateTime + postReorderSimTime) +
+                        (reorderTime + postReorderSimTime)) *
+                       totalIterations / (nu1 + 1.0);
+        double time2 = ((nu2 * nu2 * degradationRate / 2.0) + nu2 * (updateTime + postReorderSimTime) +
+                        (reorderTime + postReorderSimTime)) *
+                       totalIterations / (nu2 + 1.0);
+
+        return time1 < time2 ? nu1 : nu2;
+    }
+
+    void updateMetrics(double newReorderTime, double newSimTime)
+    {
+
+        if (newReorderTime > 0)
+        {
+            reorderTimeHistory.push_back(newReorderTime);
+            if (reorderTimeHistory.size() > metricsWindowSize)
+            {
+                reorderTimeHistory.pop_front();
+            }
+
+            reorderTime = std::accumulate(reorderTimeHistory.begin(), reorderTimeHistory.end(), 0.0) /
+                          reorderTimeHistory.size();
+        }
+
+        simulationTimeHistory.push_back(newSimTime);
+        if (simulationTimeHistory.size() > metricsWindowSize)
+        {
+            simulationTimeHistory.pop_front();
+        }
+
+        if (iterationsSinceReorder == 1)
+        {
+            postReorderSimTimeHistory.push_back(newSimTime);
+            if (postReorderSimTimeHistory.size() > metricsWindowSize)
+            {
+                postReorderSimTimeHistory.pop_front();
+            }
+
+            postReorderSimTime = std::accumulate(postReorderSimTimeHistory.begin(),
+                                                 postReorderSimTimeHistory.end(), 0.0) /
+                                 postReorderSimTimeHistory.size();
+        }
+
+        if (simulationTimeHistory.size() >= 3)
+        {
+
+            int n = std::min(5, static_cast<int>(simulationTimeHistory.size()));
+            double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+
+            for (int i = 0; i < n; i++)
+            {
+                double x = i;
+                double y = simulationTimeHistory[simulationTimeHistory.size() - n + i];
+                sumX += x;
+                sumY += y;
+                sumXY += x * y;
+                sumX2 += x * x;
+            }
+
+            double slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+            if (slope > 0)
+            {
+                degradationRate = slope;
+            }
+        }
+    }
+
+public:
+    SFCDynamicReorderingStrategy(int windowSize = 10)
+        : reorderTime(0.0),
+          postReorderSimTime(0.0),
+          updateTime(0.0),
+          degradationRate(0.001),
+          iterationsSinceReorder(0),
+          currentOptimalFrequency(10),
+          metricsWindowSize(windowSize)
+    {
+    }
+
+    bool shouldReorder(double lastSimTime = 0.0, double lastReorderTime = 0.0)
+    {
+        iterationsSinceReorder++;
+
+        updateMetrics(lastReorderTime, lastSimTime);
+
+        if (iterationsSinceReorder % 10 == 0)
+        {
+            currentOptimalFrequency = computeOptimalFrequency(1000);
+
+            currentOptimalFrequency = std::max(1, std::min(100, currentOptimalFrequency));
+        }
+
+        bool shouldReorder = iterationsSinceReorder >= currentOptimalFrequency;
+
+        if (shouldReorder)
+        {
+            iterationsSinceReorder = 0;
+        }
+
+        return shouldReorder;
+    }
+
+    void updateMetrics(double sortTime)
+    {
+
+        updateMetrics(sortTime, 0.0);
+    }
+
+    void setWindowSize(int windowSize)
+    {
+        if (windowSize > 0)
+        {
+            metricsWindowSize = windowSize;
+        }
+    }
+
+    int getOptimalFrequency() const
+    {
+        return currentOptimalFrequency;
+    }
+
+    double getDegradationRate() const
+    {
+        return degradationRate;
+    }
+
+    void reset()
+    {
+        iterationsSinceReorder = 0;
+        reorderTimeHistory.clear();
+        postReorderSimTimeHistory.clear();
+        simulationTimeHistory.clear();
+    }
+};
 
 struct Vector
 {
@@ -93,17 +264,146 @@ struct Body
 struct SimulationMetrics
 {
     float forceTimeMs;
+    float reorderTimeMs;
     float totalTimeMs;
     float energyCalculationTimeMs;
 
     SimulationMetrics() : forceTimeMs(0.0f),
+                          reorderTimeMs(0.0f),
                           totalTimeMs(0.0f),
                           energyCalculationTimeMs(0.0f) {}
 };
 
+namespace sfc
+{
+    enum class CurveType
+    {
+        MORTON,
+        HILBERT
+    };
+
+    class BodySorter
+    {
+    public:
+        BodySorter(int numBodies, CurveType type) : nBodies(numBodies), curveType(type)
+        {
+
+            cudaMalloc(&d_orderedIndices, numBodies * sizeof(int));
+
+            h_keys = new uint64_t[numBodies];
+            h_indices = new int[numBodies];
+        }
+
+        ~BodySorter()
+        {
+            if (d_orderedIndices)
+                cudaFree(d_orderedIndices);
+            if (h_keys)
+                delete[] h_keys;
+            if (h_indices)
+                delete[] h_indices;
+        }
+
+        void setCurveType(CurveType type)
+        {
+            curveType = type;
+        }
+
+        uint64_t calculateSFCKey(const Vector &pos, const Vector &minBound, const Vector &maxBound)
+        {
+
+            double normalizedX = (pos.x - minBound.x) / (maxBound.x - minBound.x);
+            double normalizedY = (pos.y - minBound.y) / (maxBound.y - minBound.y);
+            double normalizedZ = (pos.z - minBound.z) / (maxBound.z - minBound.z);
+
+            normalizedX = std::max(0.0, std::min(1.0, normalizedX));
+            normalizedY = std::max(0.0, std::min(1.0, normalizedY));
+            normalizedZ = std::max(0.0, std::min(1.0, normalizedZ));
+
+            uint32_t x = static_cast<uint32_t>(normalizedX * ((1 << 21) - 1));
+            uint32_t y = static_cast<uint32_t>(normalizedY * ((1 << 21) - 1));
+            uint32_t z = static_cast<uint32_t>(normalizedZ * ((1 << 21) - 1));
+
+            if (curveType == CurveType::MORTON)
+            {
+                return mortonEncode(x, y, z);
+            }
+            else
+            {
+                return hilbertEncode(x, y, z);
+            }
+        }
+
+        uint64_t mortonEncode(uint32_t x, uint32_t y, uint32_t z)
+        {
+
+            uint64_t answer = 0;
+            for (uint64_t i = 0; i < 21; ++i)
+            {
+                answer |= ((x & ((uint64_t)1 << i)) << (2 * i)) |
+                          ((y & ((uint64_t)1 << i)) << (2 * i + 1)) |
+                          ((z & ((uint64_t)1 << i)) << (2 * i + 2));
+            }
+            return answer;
+        }
+
+        uint64_t hilbertEncode(uint32_t x, uint32_t y, uint32_t z)
+        {
+
+            uint64_t result = 0;
+
+            for (int i = 20; i >= 0; i--)
+            {
+                uint8_t bitPos = i * 3;
+                uint8_t bitX = (x >> i) & 1;
+                uint8_t bitY = (y >> i) & 1;
+                uint8_t bitZ = (z >> i) & 1;
+
+                uint8_t idx = (bitX << 2) | (bitY << 1) | bitZ;
+                result = (result << 3) | idx;
+            }
+
+            return result;
+        }
+
+        int *sortBodies(Body *d_bodies, const Vector &minBound, const Vector &maxBound)
+        {
+
+            Body *h_bodies = new Body[nBodies];
+            cudaMemcpy(h_bodies, d_bodies, nBodies * sizeof(Body), cudaMemcpyDeviceToHost);
+
+            for (int i = 0; i < nBodies; i++)
+            {
+                h_keys[i] = calculateSFCKey(h_bodies[i].position, minBound, maxBound);
+                h_indices[i] = i;
+            }
+
+            std::sort(h_indices, h_indices + nBodies,
+                      [this](int a, int b)
+                      { return h_keys[a] < h_keys[b]; });
+
+            cudaMemcpy(d_orderedIndices, h_indices, nBodies * sizeof(int), cudaMemcpyHostToDevice);
+
+            delete[] h_bodies;
+
+            return d_orderedIndices;
+        }
+
+    private:
+        int nBodies;
+        CurveType curveType;
+        int *d_orderedIndices = nullptr;
+        uint64_t *h_keys = nullptr;
+        int *h_indices = nullptr;
+    };
+}
+
 enum class BodyDistribution
 {
     RANDOM,
+    SOLAR_SYSTEM,
+    GALAXY,
+    UNIFORM_SPHERE
 };
 
 enum class MassDistribution
@@ -118,8 +418,14 @@ constexpr double TIME_STEP = 25000.0;
 constexpr double COLLISION_THRESHOLD = 1.0e10;
 
 constexpr double MAX_DIST = 5.0e11;
+constexpr double MIN_DIST = 2.0e10;
 constexpr double EARTH_MASS = 5.974e24;
 constexpr double EARTH_DIA = 12756.0;
+constexpr double SUN_MASS = 1.989e30;
+constexpr double SUN_DIA = 1.3927e6;
+constexpr double CENTERX = 0;
+constexpr double CENTERY = 0;
+constexpr double CENTERZ = 0;
 
 constexpr int DEFAULT_BLOCK_SIZE = 256;
 
@@ -150,107 +456,6 @@ inline void checkLastCudaError(const char *const file, int line)
     }
 }
 
-inline bool checkCudaAvailability()
-{
-    std::cout << "Verificando disponibilidad de CUDA..." << std::endl;
-
-    int cudaRuntimeVersion = 0;
-    cudaError_t verErr = cudaRuntimeGetVersion(&cudaRuntimeVersion);
-    if (verErr == cudaSuccess)
-    {
-        int major = cudaRuntimeVersion / 1000;
-        int minor = (cudaRuntimeVersion % 1000) / 10;
-        std::cout << "CUDA Runtime: " << major << "." << minor << std::endl;
-    }
-    else
-    {
-        std::cerr << "No se pudo obtener versión CUDA: " << cudaGetErrorString(verErr) << std::endl;
-    }
-
-    int deviceCount = 0;
-    cudaError_t error = cudaGetDeviceCount(&deviceCount);
-
-    if (error != cudaSuccess)
-    {
-        std::cerr << "ERROR CUDA: " << cudaGetErrorString(error) << std::endl;
-        std::cerr << "No se pudo obtener el número de dispositivos CUDA." << std::endl;
-        return false;
-    }
-
-    if (deviceCount == 0)
-    {
-        std::cerr << "No se encontraron dispositivos compatibles con CUDA" << std::endl;
-        return false;
-    }
-
-    std::cout << "Se encontraron " << deviceCount << " dispositivos CUDA:" << std::endl;
-    cudaDeviceProp deviceProp;
-    for (int i = 0; i < deviceCount; i++)
-    {
-        cudaError_t propErr = cudaGetDeviceProperties(&deviceProp, i);
-        if (propErr != cudaSuccess)
-        {
-            std::cerr << "Error al obtener propiedades del dispositivo " << i << ": " << cudaGetErrorString(propErr) << std::endl;
-            continue;
-        }
-
-        std::cout << "CUDA Device " << i << ": " << deviceProp.name << std::endl;
-        std::cout << "  Capacidad de computación: " << deviceProp.major << "." << deviceProp.minor << std::endl;
-        std::cout << "  Memoria global total: " << deviceProp.totalGlobalMem / (1024 * 1024) << " MB" << std::endl;
-        std::cout << "  Multiprocesadores: " << deviceProp.multiProcessorCount << std::endl;
-        std::cout << "  Tamaño máximo de bloque: " << deviceProp.maxThreadsPerBlock << std::endl;
-    }
-
-    cudaError_t setErr = cudaSetDevice(0);
-    if (setErr != cudaSuccess)
-    {
-        std::cerr << "Error al establecer el dispositivo CUDA 0: " << cudaGetErrorString(setErr) << std::endl;
-        return false;
-    }
-
-    size_t free, total;
-    cudaMemGetInfo(&free, &total);
-    std::cout << "Memoria GPU disponible: " << free / (1024 * 1024) << " MB de " << total / (1024 * 1024) << " MB" << std::endl;
-
-    std::cout << "Inicialización CUDA completada correctamente" << std::endl;
-    return true;
-}
-
-class CudaTimer
-{
-private:
-    cudaEvent_t start_;
-    cudaEvent_t stop_;
-    float &elapsed_time_;
-    bool stopped_;
-
-public:
-    CudaTimer(float &elapsed_time) : elapsed_time_(elapsed_time), stopped_(false)
-    {
-        cudaEventCreate(&start_);
-        cudaEventCreate(&stop_);
-        cudaEventRecord(start_, 0);
-    }
-
-    ~CudaTimer()
-    {
-        if (!stopped_)
-        {
-            stop();
-        }
-        cudaEventDestroy(start_);
-        cudaEventDestroy(stop_);
-    }
-
-    void stop()
-    {
-        cudaEventRecord(stop_, 0);
-        cudaEventSynchronize(stop_);
-        cudaEventElapsedTime(&elapsed_time_, start_, stop_);
-        stopped_ = true;
-    }
-};
-
 #define CHECK_CUDA_ERROR(val) checkCudaError((val), #val, __FILE__, __LINE__)
 #define CHECK_LAST_CUDA_ERROR() checkLastCudaError(__FILE__, __LINE__)
 
@@ -277,6 +482,586 @@ __device__ double atomicAdd(double *address, double val)
     return __longlong_as_double(old);
 }
 #endif
+
+class CudaTimer
+{
+public:
+    CudaTimer(float &outputMs) : output(outputMs)
+    {
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+        cudaEventRecord(start);
+    }
+
+    ~CudaTimer()
+    {
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&output, start, stop);
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
+    }
+
+private:
+    float &output;
+    cudaEvent_t start, stop;
+};
+
+__global__ void SFCDirectSumForceKernel(Body *bodies, int *orderedIndices, bool useSFC, int nBodies)
+{
+
+    extern __shared__ char sharedMemory[];
+    Vector *sharedPos = (Vector *)sharedMemory;
+    double *sharedMass = (double *)(sharedPos + blockDim.x);
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int tx = threadIdx.x;
+
+    int realBodyIndex = (useSFC && orderedIndices != nullptr) ? orderedIndices[i] : i;
+
+    Vector myPos = Vector(0, 0, 0);
+    Vector myVel = Vector(0, 0, 0);
+    Vector myAcc = Vector(0, 0, 0);
+    double myMass = 0.0;
+    bool isDynamic = false;
+
+    if (i < nBodies)
+    {
+        myPos = bodies[realBodyIndex].position;
+        myVel = bodies[realBodyIndex].velocity;
+        myMass = bodies[realBodyIndex].mass;
+        isDynamic = bodies[realBodyIndex].isDynamic;
+    }
+
+    const int tileSize = blockDim.x;
+
+    for (int tile = 0; tile < (nBodies + tileSize - 1) / tileSize; ++tile)
+    {
+
+        int idx = tile * tileSize + tx;
+
+        if (tx < tileSize)
+        {
+            if (idx < nBodies)
+            {
+
+                int tileBodyIndex = (useSFC && orderedIndices != nullptr) ? orderedIndices[idx] : idx;
+                sharedPos[tx] = bodies[tileBodyIndex].position;
+                sharedMass[tx] = bodies[tileBodyIndex].mass;
+            }
+            else
+            {
+                sharedPos[tx] = Vector(0, 0, 0);
+                sharedMass[tx] = 0.0;
+            }
+        }
+
+        __syncthreads();
+
+        if (i < nBodies && isDynamic)
+        {
+
+            int tileLimit = min(tileSize, nBodies - tile * tileSize);
+
+            for (int j = 0; j < tileLimit; ++j)
+            {
+                int jBody = tile * tileSize + j;
+
+                if (jBody != i)
+                {
+
+                    double rx = sharedPos[j].x - myPos.x;
+                    double ry = sharedPos[j].y - myPos.y;
+                    double rz = sharedPos[j].z - myPos.z;
+
+                    double distSqr = rx * rx + ry * ry + rz * rz + E * E;
+                    double dist = sqrt(distSqr);
+
+                    if (dist >= COLLISION_TH)
+                    {
+                        double forceMag = (GRAVITY * myMass * sharedMass[j]) / (dist * distSqr);
+
+                        myAcc.x += rx * forceMag / myMass;
+                        myAcc.y += ry * forceMag / myMass;
+                        myAcc.z += rz * forceMag / myMass;
+                    }
+                }
+            }
+        }
+
+        __syncthreads();
+    }
+
+    if (i < nBodies && isDynamic)
+    {
+
+        bodies[realBodyIndex].acceleration = myAcc;
+
+        myVel.x += myAcc.x * DT;
+        myVel.y += myAcc.y * DT;
+        myVel.z += myAcc.z * DT;
+        bodies[realBodyIndex].velocity = myVel;
+
+        myPos.x += myVel.x * DT;
+        myPos.y += myVel.y * DT;
+        myPos.z += myVel.z * DT;
+        bodies[realBodyIndex].position = myPos;
+    }
+}
+
+__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy)
+{
+
+    extern __shared__ double sharedEnergy[];
+    double *sharedPotential = sharedEnergy;
+    double *sharedKinetic = &sharedEnergy[blockDim.x];
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int tx = threadIdx.x;
+
+    sharedPotential[tx] = 0.0;
+    sharedKinetic[tx] = 0.0;
+
+    if (i < nBodies)
+    {
+
+        if (bodies[i].isDynamic)
+        {
+            double vSquared = bodies[i].velocity.lengthSquared();
+            sharedKinetic[tx] = 0.5 * bodies[i].mass * vSquared;
+        }
+
+        for (int j = i + 1; j < nBodies; j++)
+        {
+
+            Vector r = bodies[j].position - bodies[i].position;
+
+            double distSqr = r.lengthSquared() + (E * E);
+            double dist = sqrt(distSqr);
+
+            if (dist < COLLISION_TH)
+                continue;
+
+            sharedPotential[tx] -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
+        }
+    }
+
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1)
+    {
+        if (tx < s)
+        {
+            sharedPotential[tx] += sharedPotential[tx + s];
+            sharedKinetic[tx] += sharedKinetic[tx + s];
+        }
+        __syncthreads();
+    }
+
+    if (tx == 0)
+    {
+        atomicAdd(d_potentialEnergy, sharedPotential[0]);
+        atomicAdd(d_kineticEnergy, sharedKinetic[0]);
+    }
+}
+
+class SFCDirectSumGPU
+{
+private:
+    Body *h_bodies = nullptr;
+    Body *d_bodies = nullptr;
+    int nBodies;
+    bool useSFC;
+    sfc::BodySorter *sorter;
+    int *d_orderedIndices;
+    sfc::CurveType curveType;
+    int reorderFrequency;
+    int iterationCounter;
+    Vector minBound;
+    Vector maxBound;
+    SimulationMetrics metrics;
+
+    bool useDynamicReordering;
+    SFCDynamicReorderingStrategy reorderingStrategy;
+
+    double potentialEnergy;
+    double kineticEnergy;
+    double totalEnergyAvg;
+    double potentialEnergyAvg;
+    double kineticEnergyAvg;
+
+    double *d_potentialEnergy;
+    double *d_kineticEnergy;
+    double *h_potentialEnergy;
+    double *h_kineticEnergy;
+
+    void updateBoundingBox()
+    {
+
+        minBound = Vector(INFINITY, INFINITY, INFINITY);
+        maxBound = Vector(-INFINITY, -INFINITY, -INFINITY);
+
+        for (int i = 0; i < nBodies; i++)
+        {
+            Vector pos = h_bodies[i].position;
+
+            minBound.x = std::min(minBound.x, pos.x);
+            minBound.y = std::min(minBound.y, pos.y);
+            minBound.z = std::min(minBound.z, pos.z);
+
+            maxBound.x = std::max(maxBound.x, pos.x);
+            maxBound.y = std::max(maxBound.y, pos.y);
+            maxBound.z = std::max(maxBound.z, pos.z);
+        }
+
+        double padding = std::max(1.0e10, (maxBound.x - minBound.x) * 0.01);
+        minBound.x -= padding;
+        minBound.y -= padding;
+        minBound.z -= padding;
+        maxBound.x += padding;
+        maxBound.y += padding;
+        maxBound.z += padding;
+    }
+
+    void orderBodiesBySFC()
+    {
+        CudaTimer timer(metrics.reorderTimeMs);
+
+        if (!useSFC || !sorter)
+        {
+            d_orderedIndices = nullptr;
+            return;
+        }
+
+        CHECK_CUDA_ERROR(cudaMemcpy(h_bodies, d_bodies, nBodies * sizeof(Body), cudaMemcpyDeviceToHost));
+
+        updateBoundingBox();
+
+        d_orderedIndices = sorter->sortBodies(d_bodies, minBound, maxBound);
+    }
+
+    void initializeDistribution(BodyDistribution dist, MassDistribution massDist, unsigned int seed)
+    {
+        std::mt19937 gen(seed);
+        std::uniform_real_distribution<double> pos_dist(-MAX_DIST, MAX_DIST);
+        std::uniform_real_distribution<double> vel_dist(-1.0e3, 1.0e3);
+        std::normal_distribution<double> normal_pos_dist(0.0, MAX_DIST / 2.0);
+        std::normal_distribution<double> normal_vel_dist(0.0, 5.0e2);
+
+        for (int i = 0; i < nBodies; i++)
+        {
+            if (massDist == MassDistribution::UNIFORM)
+            {
+
+                h_bodies[i].position = Vector(
+                    CENTERX + pos_dist(gen),
+                    CENTERY + pos_dist(gen),
+                    CENTERZ + pos_dist(gen));
+
+                h_bodies[i].velocity = Vector(
+                    vel_dist(gen),
+                    vel_dist(gen),
+                    vel_dist(gen));
+            }
+            else
+            {
+
+                h_bodies[i].position = Vector(
+                    CENTERX + normal_pos_dist(gen),
+                    CENTERY + normal_pos_dist(gen),
+                    CENTERZ + normal_pos_dist(gen));
+
+                h_bodies[i].velocity = Vector(
+                    normal_vel_dist(gen),
+                    normal_vel_dist(gen),
+                    normal_vel_dist(gen));
+            }
+
+            h_bodies[i].mass = 1.0;
+            h_bodies[i].radius = pow(h_bodies[i].mass / EARTH_MASS, 1.0 / 3.0) * (EARTH_DIA / 2.0);
+            h_bodies[i].isDynamic = true;
+            h_bodies[i].acceleration = Vector(0, 0, 0);
+        }
+    }
+
+    void calculateEnergies();
+    void initializeEnergyData();
+    void cleanupEnergyData();
+
+public:
+    SFCDirectSumGPU(int numBodies, bool enableSFC = true, int reorderFreq = 10, sfc::CurveType type = sfc::CurveType::MORTON, bool dynamicReordering = true)
+        : nBodies(numBodies),
+          useSFC(enableSFC),
+          d_orderedIndices(nullptr),
+          curveType(type),
+          reorderFrequency(reorderFreq),
+          iterationCounter(0),
+          useDynamicReordering(dynamicReordering),
+          reorderingStrategy(10),
+          potentialEnergy(0.0), kineticEnergy(0.0),
+          totalEnergyAvg(0.0), potentialEnergyAvg(0.0), kineticEnergyAvg(0.0),
+          d_potentialEnergy(nullptr), d_kineticEnergy(nullptr),
+          h_potentialEnergy(nullptr), h_kineticEnergy(nullptr)
+    {
+
+        h_bodies = new Body[nBodies];
+        CHECK_CUDA_ERROR(cudaMalloc(&d_bodies, nBodies * sizeof(Body)));
+
+        if (useSFC)
+        {
+            sorter = new sfc::BodySorter(nBodies, curveType);
+        }
+        else
+        {
+            sorter = nullptr;
+        }
+
+        initializeDistribution(BodyDistribution::RANDOM, MassDistribution::UNIFORM);
+
+        CHECK_CUDA_ERROR(cudaMemcpy(d_bodies, h_bodies, nBodies * sizeof(Body), cudaMemcpyHostToDevice));
+
+        if (useSFC)
+        {
+            orderBodiesBySFC();
+        }
+
+        initializeEnergyData();
+
+        std::cout << "SFC Direct Sum GPU simulation created with " << nBodies << " bodies." << std::endl;
+        if (useSFC)
+        {
+            std::cout << "Space-Filling Curve ordering enabled with "
+                      << (useDynamicReordering ? "dynamic" : "fixed") << " reordering";
+            if (!useDynamicReordering)
+            {
+                std::cout << " frequency " << reorderFrequency;
+            }
+            std::cout << " and curve type "
+                      << (curveType == sfc::CurveType::MORTON ? "MORTON" : "HILBERT") << std::endl;
+        }
+    }
+
+    ~SFCDirectSumGPU()
+    {
+
+        cudaDeviceSynchronize();
+
+        cleanupEnergyData();
+
+        delete[] h_bodies;
+        if (d_bodies)
+            CHECK_CUDA_ERROR(cudaFree(d_bodies));
+        if (sorter)
+            delete sorter;
+    }
+
+    void setCurveType(sfc::CurveType type)
+    {
+        if (type != curveType)
+        {
+            curveType = type;
+
+            if (sorter)
+                sorter->setCurveType(type);
+
+            iterationCounter = reorderFrequency;
+        }
+    }
+
+    void computeForces()
+    {
+
+        CudaTimer timer(metrics.forceTimeMs);
+
+        int blockSize = g_blockSize;
+        int gridSize = (nBodies + blockSize - 1) / blockSize;
+
+        size_t sharedMemSize = blockSize * sizeof(Vector) + blockSize * sizeof(double);
+        SFCDirectSumForceKernel<<<gridSize, blockSize, sharedMemSize>>>(d_bodies, d_orderedIndices, useSFC, nBodies);
+        CHECK_LAST_CUDA_ERROR();
+    }
+
+    void update()
+    {
+        CudaTimer timer(metrics.totalTimeMs);
+
+        bool shouldReorder = false;
+        if (useSFC)
+        {
+            if (useDynamicReordering)
+            {
+
+                shouldReorder = reorderingStrategy.shouldReorder(metrics.forceTimeMs, metrics.reorderTimeMs);
+            }
+            else
+            {
+
+                shouldReorder = (iterationCounter >= reorderFrequency);
+            }
+
+            if (shouldReorder)
+            {
+                orderBodiesBySFC();
+                iterationCounter = 0;
+            }
+        }
+
+        computeForces();
+        iterationCounter++;
+
+        if (useSFC && useDynamicReordering)
+        {
+            reorderingStrategy.updateMetrics(shouldReorder ? metrics.reorderTimeMs : 0.0, metrics.forceTimeMs);
+        }
+
+        calculateEnergies();
+    }
+
+    void printPerformance()
+    {
+        printf("Performance Metrics:\n");
+        printf("  Force calculation: %.3f ms\n", metrics.forceTimeMs);
+        if (useSFC)
+        {
+            printf("  Reordering: %.3f ms\n", metrics.reorderTimeMs);
+            if (useDynamicReordering)
+            {
+                printf("  Optimal reorder freq: %d\n", reorderingStrategy.getOptimalFrequency());
+                printf("  Degradation rate: %.6f ms/iter\n", reorderingStrategy.getDegradationRate());
+            }
+        }
+        printf("  Total update: %.3f ms\n", metrics.totalTimeMs);
+    }
+
+    void runSimulation(int numIterations, int printFreq = 10)
+    {
+        printf("Starting simulation with %d bodies for %d iterations\n", nBodies, numIterations);
+        printf("Using SFC: %s\n", useSFC ? "Yes" : "No");
+        if (useSFC)
+            printf("Reorder frequency: %d iterations\n", reorderFrequency);
+
+        float totalTime = 0.0f;
+
+        for (int i = 0; i < numIterations; i++)
+        {
+            update();
+            totalTime += metrics.totalTimeMs;
+
+            if (i % printFreq == 0 || i == numIterations - 1)
+            {
+                printf("Iteration %d/%d (%.1f%%)\n", i + 1, numIterations, (i + 1) * 100.0f / numIterations);
+                printPerformance();
+            }
+        }
+
+        printf("Simulation completed in %.3f ms (avg %.3f ms per iteration)\n",
+               totalTime, totalTime / numIterations);
+    }
+
+    int getOptimalReorderFrequency() const
+    {
+        if (useDynamicReordering)
+        {
+            return reorderingStrategy.getOptimalFrequency();
+        }
+        return reorderFrequency;
+    }
+
+    double getTotalTime() const { return metrics.totalTimeMs; }
+    double getForceCalculationTime() const { return metrics.forceTimeMs; }
+    double getReorderTime() const { return metrics.reorderTimeMs; }
+    double getEnergyCalculationTime() const { return metrics.energyCalculationTimeMs; }
+    int getNumBodies() const { return nBodies; }
+    int getBlockSize() const { return g_blockSize; }
+    int getSortType() const { return static_cast<int>(curveType); }
+    bool isDynamicReordering() const { return useDynamicReordering; }
+
+    double getPotentialEnergy() const { return potentialEnergy; }
+    double getKineticEnergy() const { return kineticEnergy; }
+    double getTotalEnergy() const { return potentialEnergy + kineticEnergy; }
+    double getPotentialEnergyAvg() const { return potentialEnergyAvg; }
+    double getKineticEnergyAvg() const { return kineticEnergyAvg; }
+    double getTotalEnergyAvg() const { return totalEnergyAvg; }
+
+    void calculateEnergies()
+    {
+        Body *d_bodies = bodySystem->getDeviceBodies();
+        int nBodies = bodySystem->getNumBodies();
+
+        if (d_bodies == nullptr)
+        {
+            std::cerr << "Error: Device bodies not initialized in calculateEnergies" << std::endl;
+            return;
+        }
+
+        cudaDeviceSynchronize();
+
+        CudaTimer timer(metrics.energyCalculationTimeMs);
+
+        CHECK_CUDA_ERROR(cudaMemset(d_potentialEnergy, 0, sizeof(double)));
+        CHECK_CUDA_ERROR(cudaMemset(d_kineticEnergy, 0, sizeof(double)));
+
+        int blockSize = g_blockSize;
+
+        blockSize = (blockSize / 32) * 32;
+        if (blockSize < 32)
+            blockSize = 32;
+        if (blockSize > 1024)
+            blockSize = 1024;
+
+        int gridSize = (nBodies + blockSize - 1) / blockSize;
+        if (gridSize < 1)
+            gridSize = 1;
+
+        size_t sharedMemSize = 2 * blockSize * sizeof(double);
+
+        CUDA_KERNEL_CALL(CalculateEnergiesKernel, gridSize, blockSize, sharedMemSize, 0,
+                         d_bodies, nBodies, d_potentialEnergy, d_kineticEnergy);
+
+        CHECK_CUDA_ERROR(cudaMemcpy(h_potentialEnergy, d_potentialEnergy, sizeof(double), cudaMemcpyDeviceToHost));
+        CHECK_CUDA_ERROR(cudaMemcpy(h_kineticEnergy, d_kineticEnergy, sizeof(double), cudaMemcpyDeviceToHost));
+
+        potentialEnergy = *h_potentialEnergy;
+        kineticEnergy = *h_kineticEnergy;
+    }
+
+    void initializeEnergyData()
+    {
+
+        h_potentialEnergy = new double[1];
+        h_kineticEnergy = new double[1];
+
+        CHECK_CUDA_ERROR(cudaMalloc((void **)&d_potentialEnergy, sizeof(double)));
+        CHECK_CUDA_ERROR(cudaMalloc((void **)&d_kineticEnergy, sizeof(double)));
+    }
+
+    void cleanupEnergyData()
+    {
+        if (h_potentialEnergy != nullptr)
+        {
+            delete[] h_potentialEnergy;
+            h_potentialEnergy = nullptr;
+        }
+
+        if (h_kineticEnergy != nullptr)
+        {
+            delete[] h_kineticEnergy;
+            h_kineticEnergy = nullptr;
+        }
+
+        if (d_potentialEnergy != nullptr)
+        {
+            cudaFree(d_potentialEnergy);
+            d_potentialEnergy = nullptr;
+        }
+
+        if (d_kineticEnergy != nullptr)
+        {
+            cudaFree(d_kineticEnergy);
+            d_kineticEnergy = nullptr;
+        }
+    }
+};
 
 bool dirExists(const std::string &dirName)
 {
@@ -345,7 +1130,7 @@ void initializeCsv(const std::string &filename, bool append = false)
 
     if (!append)
     {
-        file << "timestamp,method,bodies,steps,block_size,total_time_ms,avg_step_time_ms,force_calculation_time_ms,memory_transfer_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
+        file << "timestamp,method,bodies,steps,block_size,sort_type,total_time_ms,avg_step_time_ms,force_calculation_time_ms,sort_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
     }
 
     file.close();
@@ -356,9 +1141,10 @@ void saveMetrics(const std::string &filename,
                  int bodies,
                  int steps,
                  int blockSize,
-                 double totalTime,
-                 double forceCalculationTime,
-                 double memoryTransferTime,
+                 int sortType,
+                 float totalTime,
+                 float forceCalculationTime,
+                 float sortTime,
                  double potentialEnergy,
                  double kineticEnergy,
                  double totalEnergy)
@@ -375,17 +1161,18 @@ void saveMetrics(const std::string &filename,
     std::stringstream timestamp;
     timestamp << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S");
 
-    double avgTimePerStep = totalTime / steps;
+    float avgTimePerStep = totalTime / steps;
 
     file << timestamp.str() << ","
-         << "GPU_Direct_Sum" << ","
+         << "GPU_SFC_Direct_Sum" << ","
          << bodies << ","
          << steps << ","
          << blockSize << ","
+         << sortType << ","
          << totalTime << ","
          << avgTimePerStep << ","
          << forceCalculationTime << ","
-         << memoryTransferTime << ","
+         << sortTime << ","
          << potentialEnergy << ","
          << kineticEnergy << ","
          << totalEnergy << std::endl;
@@ -394,592 +1181,80 @@ void saveMetrics(const std::string &filename,
     std::cout << "Métricas guardadas en: " << filename << std::endl;
 }
 
-class BodySystem
-{
-private:
-    int nBodies;
-    Body *h_bodies;
-    Body *d_bodies;
-    bool _isInitialized;
-    unsigned int randomSeed;
-
-    void initRandomBodies(Vector centerPos, MassDistribution massDist);
-
-public:
-    BodySystem(int numBodies,
-               BodyDistribution dist = BodyDistribution::RANDOM,
-               unsigned int seed = static_cast<unsigned int>(time(nullptr)),
-               MassDistribution massDist = MassDistribution::UNIFORM);
-
-    ~BodySystem();
-    void setup();
-    void copyBodiesToDevice();
-    void copyBodiesFromDevice();
-    Body *getHostBodies() const { return h_bodies; }
-    Body *getDeviceBodies() const { return d_bodies; }
-    int getNumBodies() const { return nBodies; }
-    bool isInitialized() const { return _isInitialized; }
-    void initBodies(BodyDistribution dist, unsigned int seed, MassDistribution massDist);
-};
-
-BodySystem::BodySystem(int numBodies, BodyDistribution dist, unsigned int seed, MassDistribution massDist)
-    : nBodies(numBodies), h_bodies(nullptr), d_bodies(nullptr), _isInitialized(false), randomSeed(seed)
-{
-    std::cout << "Creating BodySystem with " << numBodies << " bodies." << std::endl;
-
-    h_bodies = new Body[numBodies];
-    initBodies(dist, seed, massDist);
-}
-
-BodySystem::~BodySystem()
-{
-    if (h_bodies)
-    {
-        delete[] h_bodies;
-        h_bodies = nullptr;
-    }
-
-    if (d_bodies)
-    {
-        cudaFree(d_bodies);
-        d_bodies = nullptr;
-    }
-}
-
-void BodySystem::setup()
-{
-    if (_isInitialized)
-    {
-        std::cout << "BodySystem already initialized." << std::endl;
-        return;
-    }
-
-    CHECK_CUDA_ERROR(cudaMalloc((void **)&d_bodies, nBodies * sizeof(Body)));
-    copyBodiesToDevice();
-    _isInitialized = true;
-}
-
-void BodySystem::copyBodiesToDevice()
-{
-    if (!d_bodies)
-    {
-        std::cerr << "Device memory not allocated. Call setup() first." << std::endl;
-        return;
-    }
-
-    CHECK_CUDA_ERROR(cudaMemcpy(d_bodies, h_bodies, nBodies * sizeof(Body), cudaMemcpyHostToDevice));
-}
-
-void BodySystem::copyBodiesFromDevice()
-{
-    if (!d_bodies)
-    {
-        std::cerr << "Device memory not allocated. Call setup() first." << std::endl;
-        return;
-    }
-
-    CHECK_CUDA_ERROR(cudaMemcpy(h_bodies, d_bodies, nBodies * sizeof(Body), cudaMemcpyDeviceToHost));
-}
-
-void BodySystem::initBodies(BodyDistribution dist, unsigned int seed, MassDistribution massDist)
-{
-    Vector centerPos = Vector(0, 0, 0);
-    initRandomBodies(centerPos, massDist);
-}
-
-void BodySystem::initRandomBodies(Vector centerPos, MassDistribution massDist)
-{
-    std::mt19937 gen(randomSeed);
-    std::uniform_real_distribution<double> posDist(-100.0, 100.0);
-    std::uniform_real_distribution<double> velDist(-5.0, 5.0);
-    std::normal_distribution<double> normalPosDist(0.0, 5.0);
-    std::normal_distribution<double> normalVelDist(0.0, 2.5);
-
-    for (int i = 0; i < nBodies; i++)
-    {
-
-        if (massDist == MassDistribution::UNIFORM)
-        {
-
-            h_bodies[i].position.x = centerPos.x + posDist(gen);
-            h_bodies[i].position.y = centerPos.y + posDist(gen);
-            h_bodies[i].position.z = centerPos.z + posDist(gen);
-
-            h_bodies[i].velocity.x = velDist(gen);
-            h_bodies[i].velocity.y = velDist(gen);
-            h_bodies[i].velocity.z = velDist(gen);
-        }
-        else
-        {
-
-            h_bodies[i].position.x = centerPos.x + normalPosDist(gen);
-            h_bodies[i].position.y = centerPos.y + normalPosDist(gen);
-            h_bodies[i].position.z = centerPos.z + normalPosDist(gen);
-
-            h_bodies[i].velocity.x = normalVelDist(gen);
-            h_bodies[i].velocity.y = normalVelDist(gen);
-            h_bodies[i].velocity.z = normalVelDist(gen);
-        }
-
-        h_bodies[i].mass = 1.0;
-        h_bodies[i].radius = pow(h_bodies[i].mass / EARTH_MASS, 1.0 / 3.0) * (EARTH_DIA / 2.0);
-        h_bodies[i].isDynamic = true;
-        h_bodies[i].acceleration = Vector(0, 0, 0);
-    }
-}
-
-__global__ void DirectSumForceKernel(Body *bodies, int nBodies);
-__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy);
-
-class DirectSumGPU
-{
-private:
-    BodySystem *bodySystem;
-    SimulationMetrics metrics;
-    bool firstKernelLaunch;
-    double potentialEnergy;
-    double kineticEnergy;
-    double totalEnergyAvg;
-    double potentialEnergyAvg;
-    double kineticEnergyAvg;
-
-    double *d_potentialEnergy;
-    double *d_kineticEnergy;
-    double *h_potentialEnergy;
-    double *h_kineticEnergy;
-
-    void computeForces();
-    void calculateEnergies();
-    void initializeEnergyData();
-    void cleanupEnergyData();
-
-public:
-    DirectSumGPU(BodySystem *system);
-    ~DirectSumGPU();
-
-    void update();
-    const SimulationMetrics &getMetrics() const { return metrics; }
-    void run(int steps);
-    double getTotalTime() const { return metrics.totalTimeMs; }
-    double getForceCalculationTime() const { return metrics.forceTimeMs; }
-    double getEnergyCalculationTime() const { return metrics.energyCalculationTimeMs; }
-    double getPotentialEnergy() const { return potentialEnergy; }
-    double getKineticEnergy() const { return kineticEnergy; }
-    double getTotalEnergy() const { return potentialEnergy + kineticEnergy; }
-    double getPotentialEnergyAvg() const { return potentialEnergyAvg; }
-    double getKineticEnergyAvg() const { return kineticEnergyAvg; }
-    double getTotalEnergyAvg() const { return totalEnergyAvg; }
-    int getBlockSize() const { return g_blockSize; }
-    int getNumBodies() const { return bodySystem->getNumBodies(); }
-};
-
-__global__ void DirectSumForceKernel(Body *bodies, int nBodies)
-{
-    extern __shared__ char sharedMemory[];
-    Vector *sharedPos = (Vector *)sharedMemory;
-    double *sharedMass = (double *)(sharedPos + blockDim.x);
-
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int tx = threadIdx.x;
-
-    Vector myPos = Vector(0, 0, 0);
-    Vector myVel = Vector(0, 0, 0);
-    Vector myAcc = Vector(0, 0, 0);
-    double myMass = 0.0;
-    bool isDynamic = false;
-    bool isValid = false;
-
-    if (i < nBodies && bodies != nullptr)
-    {
-        myPos = bodies[i].position;
-        myVel = bodies[i].velocity;
-        myMass = bodies[i].mass;
-        isDynamic = bodies[i].isDynamic;
-        isValid = true;
-    }
-
-    const int tileSize = blockDim.x;
-
-    for (int tile = 0; tile < (nBodies + tileSize - 1) / tileSize; ++tile)
-    {
-        int idx = tile * tileSize + tx;
-
-        sharedPos[tx] = Vector(0, 0, 0);
-        sharedMass[tx] = 0.0;
-        if (idx < nBodies && bodies != nullptr)
-        {
-            sharedPos[tx] = bodies[idx].position;
-            sharedMass[tx] = bodies[idx].mass;
-        }
-
-        __syncthreads();
-        if (isValid && isDynamic)
-        {
-            int tileLimit = min(tileSize, nBodies - tile * tileSize);
-            for (int j = 0; j < tileLimit; ++j)
-            {
-                int jBody = tile * tileSize + j;
-                if (jBody != i && sharedMass[j] > 0.0)
-                {
-                    double rx = sharedPos[j].x - myPos.x;
-                    double ry = sharedPos[j].y - myPos.y;
-                    double rz = sharedPos[j].z - myPos.z;
-                    double distSqr = rx * rx + ry * ry + rz * rz + E * E;
-                    if (distSqr >= COLLISION_TH * COLLISION_TH)
-                    {
-                        double dist = sqrt(distSqr);
-                        double forceMag = (GRAVITY * myMass * sharedMass[j]) / (dist * distSqr);
-                        myAcc.x += rx * forceMag / myMass;
-                        myAcc.y += ry * forceMag / myMass;
-                        myAcc.z += rz * forceMag / myMass;
-                    }
-                }
-            }
-        }
-
-        __syncthreads();
-    }
-
-    if (isValid && isDynamic && bodies != nullptr)
-    {
-        bodies[i].acceleration = myAcc;
-
-        myVel.x += myAcc.x * DT;
-        myVel.y += myAcc.y * DT;
-        myVel.z += myAcc.z * DT;
-        bodies[i].velocity = myVel;
-
-        myPos.x += myVel.x * DT;
-        myPos.y += myVel.y * DT;
-        myPos.z += myVel.z * DT;
-        bodies[i].position = myPos;
-    }
-}
-
-__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy)
-{
-    extern __shared__ double sharedEnergy[];
-    double *sharedPotential = sharedEnergy;
-    double *sharedKinetic = &sharedEnergy[blockDim.x];
-
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int tx = threadIdx.x;
-    sharedPotential[tx] = 0.0;
-    sharedKinetic[tx] = 0.0;
-
-    if (i < nBodies)
-    {
-        if (bodies[i].isDynamic)
-        {
-            double vSquared = bodies[i].velocity.lengthSquared();
-            sharedKinetic[tx] = 0.5 * bodies[i].mass * vSquared;
-        }
-
-        for (int j = i + 1; j < nBodies; j++)
-        {
-            Vector r = bodies[j].position - bodies[i].position;
-
-            double distSqr = r.lengthSquared() + (E * E);
-            double dist = sqrt(distSqr);
-
-            if (dist < COLLISION_TH)
-                continue;
-
-            sharedPotential[tx] -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
-        }
-    }
-
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1)
-    {
-        if (tx < s)
-        {
-            sharedPotential[tx] += sharedPotential[tx + s];
-            sharedKinetic[tx] += sharedKinetic[tx + s];
-        }
-        __syncthreads();
-    }
-
-    if (tx == 0)
-    {
-        atomicAdd(d_potentialEnergy, sharedPotential[0]);
-        atomicAdd(d_kineticEnergy, sharedKinetic[0]);
-    }
-}
-
-DirectSumGPU::DirectSumGPU(BodySystem *system)
-    : bodySystem(system), firstKernelLaunch(true),
-      potentialEnergy(0.0), kineticEnergy(0.0),
-      totalEnergyAvg(0.0), potentialEnergyAvg(0.0), kineticEnergyAvg(0.0),
-      d_potentialEnergy(nullptr), d_kineticEnergy(nullptr),
-      h_potentialEnergy(nullptr), h_kineticEnergy(nullptr)
-{
-    if (!bodySystem->isInitialized())
-    {
-        std::cout << "Initializing body system..." << std::endl;
-        bodySystem->setup();
-    }
-
-    initializeEnergyData();
-}
-
-DirectSumGPU::~DirectSumGPU()
-{
-    cudaDeviceSynchronize();
-    cleanupEnergyData();
-}
-
-void DirectSumGPU::initializeEnergyData()
-{
-    h_potentialEnergy = new double[1];
-    h_kineticEnergy = new double[1];
-
-    CHECK_CUDA_ERROR(cudaMalloc((void **)&d_potentialEnergy, sizeof(double)));
-    CHECK_CUDA_ERROR(cudaMalloc((void **)&d_kineticEnergy, sizeof(double)));
-}
-
-void DirectSumGPU::cleanupEnergyData()
-{
-    if (h_potentialEnergy != nullptr)
-    {
-        delete[] h_potentialEnergy;
-        h_potentialEnergy = nullptr;
-    }
-
-    if (h_kineticEnergy != nullptr)
-    {
-        delete[] h_kineticEnergy;
-        h_kineticEnergy = nullptr;
-    }
-
-    if (d_potentialEnergy != nullptr)
-    {
-        cudaFree(d_potentialEnergy);
-        d_potentialEnergy = nullptr;
-    }
-
-    if (d_kineticEnergy != nullptr)
-    {
-        cudaFree(d_kineticEnergy);
-        d_kineticEnergy = nullptr;
-    }
-}
-
-void DirectSumGPU::calculateEnergies()
-{
-    Body *d_bodies = bodySystem->getDeviceBodies();
-    int nBodies = bodySystem->getNumBodies();
-
-    if (d_bodies == nullptr)
-    {
-        std::cerr << "Error: Device bodies not initialized in calculateEnergies" << std::endl;
-        return;
-    }
-
-    cudaDeviceSynchronize();
-
-    CudaTimer timer(metrics.energyCalculationTimeMs);
-
-    CHECK_CUDA_ERROR(cudaMemset(d_potentialEnergy, 0, sizeof(double)));
-    CHECK_CUDA_ERROR(cudaMemset(d_kineticEnergy, 0, sizeof(double)));
-
-    int blockSize = g_blockSize;
-    blockSize = (blockSize / 32) * 32;
-    if (blockSize < 32)
-        blockSize = 32;
-    if (blockSize > 1024)
-        blockSize = 1024;
-
-    int gridSize = (nBodies + blockSize - 1) / blockSize;
-    if (gridSize < 1)
-        gridSize = 1;
-
-    size_t sharedMemSize = 2 * blockSize * sizeof(double);
-
-    CUDA_KERNEL_CALL(CalculateEnergiesKernel, gridSize, blockSize, sharedMemSize, 0,
-                     d_bodies, nBodies, d_potentialEnergy, d_kineticEnergy);
-    CHECK_CUDA_ERROR(cudaMemcpy(h_potentialEnergy, d_potentialEnergy, sizeof(double), cudaMemcpyDeviceToHost));
-    CHECK_CUDA_ERROR(cudaMemcpy(h_kineticEnergy, d_kineticEnergy, sizeof(double), cudaMemcpyDeviceToHost));
-
-    potentialEnergy = *h_potentialEnergy;
-    kineticEnergy = *h_kineticEnergy;
-}
-
-void DirectSumGPU::computeForces()
-{
-    Body *d_bodies = bodySystem->getDeviceBodies();
-    int nBodies = bodySystem->getNumBodies();
-
-    if (d_bodies == nullptr)
-    {
-        std::cerr << "Error: Device bodies not initialized in computeForces" << std::endl;
-        return;
-    }
-
-    cudaDeviceSynchronize();
-
-    CudaTimer timer(metrics.forceTimeMs);
-
-    int blockSize = g_blockSize;
-    if (blockSize < 32)
-        blockSize = 32;
-    if (blockSize > 1024)
-        blockSize = 1024;
-
-    int gridSize = (nBodies + blockSize - 1) / blockSize;
-    if (gridSize < 1)
-        gridSize = 1;
-
-    size_t sharedMemSize = blockSize * sizeof(Vector) + blockSize * sizeof(double);
-
-    if (firstKernelLaunch)
-    {
-        std::cout << "Primera ejecución del kernel DirectSum GPU:" << std::endl;
-        std::cout << "- Grid size: " << gridSize << std::endl;
-        std::cout << "- Block size: " << blockSize << std::endl;
-        std::cout << "- Shared memory: " << sharedMemSize << " bytes" << std::endl;
-        std::cout << "- Cuerpos: " << nBodies << std::endl;
-
-        size_t free, total;
-        cudaMemGetInfo(&free, &total);
-        std::cout << "- Memoria GPU disponible: " << free / (1024 * 1024) << " MB de "
-                  << total / (1024 * 1024) << " MB" << std::endl;
-
-        firstKernelLaunch = false;
-    }
-
-    CUDA_KERNEL_CALL(DirectSumForceKernel, gridSize, blockSize, sharedMemSize, 0, d_bodies, nBodies);
-}
-
-void DirectSumGPU::update()
-{
-    CudaTimer timer(metrics.totalTimeMs);
-    computeForces();
-    calculateEnergies();
-    cudaDeviceSynchronize();
-}
-
-void DirectSumGPU::run(int steps)
-{
-    std::cout << "Running DirectSum GPU simulation for " << steps << " steps..." << std::endl;
-
-    float totalTime = 0.0f;
-    float minTime = std::numeric_limits<float>::max();
-    float maxTime = 0.0f;
-
-    double totalPotentialEnergy = 0.0;
-    double totalKineticEnergy = 0.0;
-
-    for (int step = 0; step < steps; step++)
-    {
-        update();
-
-        totalTime += metrics.totalTimeMs;
-        minTime = std::min(minTime, metrics.totalTimeMs);
-        maxTime = std::max(maxTime, metrics.totalTimeMs);
-
-        totalPotentialEnergy += potentialEnergy;
-        totalKineticEnergy += kineticEnergy;
-    }
-
-    potentialEnergyAvg = totalPotentialEnergy / steps;
-    kineticEnergyAvg = totalKineticEnergy / steps;
-    totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
-
-    bodySystem->copyBodiesFromDevice();
-
-    std::cout << "Simulation complete." << std::endl;
-    std::cout << "Average time per step: " << totalTime / steps << " ms" << std::endl;
-    std::cout << "Min time: " << minTime << " ms" << std::endl;
-    std::cout << "Max time: " << maxTime << " ms" << std::endl;
-    std::cout << "Average Energy Values:" << std::endl;
-    std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
-    std::cout << "  Kinetic Energy:   " << std::scientific << std::setprecision(6) << kineticEnergyAvg << std::endl;
-    std::cout << "  Total Energy:     " << std::scientific << std::setprecision(6) << totalEnergyAvg << std::endl;
-}
-
-void printUsage()
-{
-    std::cout << "Usage: directsum_gpu [options]" << std::endl;
-    std::cout << "Options:" << std::endl;
-    std::cout << "  -n <num>       Number of bodies (default: 10000)" << std::endl;
-    std::cout << "  -s <num>       Number of simulation steps (default: 100)" << std::endl;
-    std::cout << "  -b <num>       Block size for CUDA kernels (default: 256)" << std::endl;
-    std::cout << "  -d <dist>      Body distribution: random, solar, galaxy, sphere (default: random)" << std::endl;
-    std::cout << "  -m <dist>      Mass distribution: uniform, normal (default: uniform)" << std::endl;
-    std::cout << "  -seed <num>    Random seed (default: time-based)" << std::endl;
-    std::cout << "  -h, --help     Show this help message" << std::endl;
-}
-
 int main(int argc, char **argv)
 {
-    int numBodies = 10000;
-    int numSteps = 100;
-    BodyDistribution bodyDist = BodyDistribution::RANDOM;
-    MassDistribution massDist = MassDistribution::UNIFORM;
-    unsigned int seed = static_cast<unsigned int>(time(nullptr));
+
+    int nBodies = 10000;
+    bool useSFC = true;
+    int reorderFreq = 10;
+    BodyDistribution bodyDist = BodyDistribution::GALAXY;
+    MassDistribution massDist = MassDistribution::NORMAL;
+    unsigned int seed = 42;
+    sfc::CurveType curveType = sfc::CurveType::MORTON;
+    int numIterations = 100;
+    int blockSize = DEFAULT_BLOCK_SIZE;
+    bool useDynamicReordering = true;
 
     bool saveMetricsToFile = false;
-    std::string metricsFile = "./DirectSumGPU_metrics.csv";
+    std::string metricsFile = "./SFCDirectSumGPU_metrics.csv";
 
     for (int i = 1; i < argc; i++)
     {
         std::string arg = argv[i];
-
-        if (arg == "-h" || arg == "--help")
+        if (arg == "-n" && i + 1 < argc)
+            nBodies = std::stoi(argv[++i]);
+        else if (arg == "-nosfc")
+            useSFC = false;
+        else if (arg == "-freq" && i + 1 < argc)
+            reorderFreq = std::stoi(argv[++i]);
+        else if (arg == "-dist" && i + 1 < argc)
         {
-            printUsage();
-            return 0;
-        }
-        else if (arg == "-n" && i + 1 < argc)
-        {
-            numBodies = std::atoi(argv[++i]);
-            if (numBodies <= 0)
-            {
-                std::cerr << "Error: Number of bodies must be positive" << std::endl;
-                return 1;
-            }
-        }
-        else if (arg == "-s" && i + 1 < argc)
-        {
-            numSteps = std::atoi(argv[++i]);
-            if (numSteps <= 0)
-            {
-                std::cerr << "Error: Number of steps must be positive" << std::endl;
-                return 1;
-            }
-        }
-        else if (arg == "-b" && i + 1 < argc)
-        {
-            g_blockSize = std::atoi(argv[++i]);
-            if (g_blockSize <= 0)
-            {
-                std::cerr << "Error: Block size must be positive" << std::endl;
-                return 1;
-            }
-        }
-        else if (arg == "-d" && i + 1 < argc)
-        {
-            std::string distStr = argv[++i];
-            if (distStr == "random")
+            std::string distType = argv[++i];
+            if (distType == "galaxy")
+                bodyDist = BodyDistribution::GALAXY;
+            else if (distType == "solar")
+                bodyDist = BodyDistribution::SOLAR_SYSTEM;
+            else if (distType == "uniform")
+                bodyDist = BodyDistribution::UNIFORM_SPHERE;
+            else if (distType == "random")
                 bodyDist = BodyDistribution::RANDOM;
         }
-        else if (arg == "-m" && i + 1 < argc)
+        else if (arg == "-mass" && i + 1 < argc)
         {
-            std::string distStr = argv[++i];
-            if (distStr == "normal")
-                massDist = MassDistribution::NORMAL;
-            else if (distStr == "uniform")
+            std::string massType = argv[++i];
+            if (massType == "uniform")
                 massDist = MassDistribution::UNIFORM;
-            else
-            {
-                std::cerr << "Error: Unknown mass distribution: " << distStr << std::endl;
-                return 1;
-            }
+            else if (massType == "normal")
+                massDist = MassDistribution::NORMAL;
         }
         else if (arg == "-seed" && i + 1 < argc)
+            seed = std::stoi(argv[++i]);
+        else if (arg == "-curve" && i + 1 < argc)
         {
-            seed = static_cast<unsigned int>(std::atoi(argv[++i]));
+            std::string curveStr = argv[++i];
+            if (curveStr == "morton")
+                curveType = sfc::CurveType::MORTON;
+            else if (curveStr == "hilbert")
+                curveType = sfc::CurveType::HILBERT;
+        }
+        else if (arg == "-iter" && i + 1 < argc)
+            numIterations = std::stoi(argv[++i]);
+        else if (arg == "-block" && i + 1 < argc)
+            blockSize = std::stoi(argv[++i]);
+        else if (arg == "-h" || arg == "--help")
+        {
+            std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
+            std::cout << "Options:" << std::endl;
+            std::cout << "  -n <num>          Number of bodies (default: 10000)" << std::endl;
+            std::cout << "  -nosfc            Disable Space-Filling Curve ordering" << std::endl;
+            std::cout << "  -freq <num>       Reordering frequency (default: 10)" << std::endl;
+            std::cout << "  -dist <type>      Body distribution: galaxy, solar, uniform, random (default: galaxy)" << std::endl;
+            std::cout << "  -mass <type>      Mass distribution: uniform, normal (default: normal)" << std::endl;
+            std::cout << "  -seed <num>       Random seed (default: 42)" << std::endl;
+            std::cout << "  -curve <type>     SFC curve type: morton, hilbert (default: morton)" << std::endl;
+            std::cout << "  -iter <num>       Number of iterations (default: 100)" << std::endl;
+            std::cout << "  -block <num>      CUDA block size (default: 256)" << std::endl;
+            return 0;
         }
         else if (arg == "--save-metrics")
         {
@@ -989,63 +1264,60 @@ int main(int argc, char **argv)
         {
             metricsFile = argv[++i];
         }
-        else
+        else if (arg == "--dynamic-reordering")
         {
-            std::cerr << "Error: Unknown option: " << arg << std::endl;
-            printUsage();
-            return 1;
         }
     }
 
-    std::cout << "DirectSum GPU Algorithm" << std::endl;
-    std::cout << "=======================" << std::endl;
+    g_blockSize = blockSize;
 
-    if (!checkCudaAvailability())
+    int deviceCount;
+    cudaGetDeviceCount(&deviceCount);
+    if (deviceCount == 0)
     {
-        std::cerr << "CUDA is not available or initialization failed." << std::endl;
+        std::cerr << "No CUDA devices found!" << std::endl;
         return 1;
     }
 
-    try
+    cudaDeviceProp deviceProp;
+    cudaGetDeviceProperties(&deviceProp, 0);
+    std::cout << "Using GPU: " << deviceProp.name << std::endl;
+
+    SFCDirectSumGPU simulation(
+        nBodies,
+        useSFC,
+        reorderFreq,
+        curveType,
+        useDynamicReordering);
+
+    simulation.runSimulation(numIterations);
+
+    if (saveMetricsToFile)
     {
-        std::cout << "Creating body system with " << numBodies << " bodies..." << std::endl;
-        BodySystem bodySystem(numBodies, bodyDist, seed, massDist);
 
-        std::cout << "Initializing DirectSum GPU simulation..." << std::endl;
-        DirectSumGPU simulation(&bodySystem);
-
-        simulation.run(numSteps);
-
-        if (saveMetricsToFile)
+        bool fileExists = false;
+        std::ifstream checkFile(metricsFile);
+        if (checkFile.good())
         {
-            bool fileExists = false;
-            std::ifstream checkFile(metricsFile);
-            if (checkFile.good())
-            {
-                fileExists = true;
-            }
-            checkFile.close();
-
-            initializeCsv(metricsFile, fileExists);
-            saveMetrics(
-                metricsFile,
-                simulation.getNumBodies(),
-                numSteps,
-                simulation.getBlockSize(),
-                simulation.getTotalTime(),
-                simulation.getForceCalculationTime(),
-                simulation.getEnergyCalculationTime(),
-                simulation.getPotentialEnergyAvg(),
-                simulation.getKineticEnergyAvg(),
-                simulation.getTotalEnergyAvg());
-
-            std::cout << "Métricas guardadas en: " << metricsFile << std::endl;
+            fileExists = true;
         }
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return 1;
+        checkFile.close();
+
+        initializeCsv(metricsFile, fileExists);
+        saveMetrics(
+            metricsFile,
+            simulation.getNumBodies(),
+            numIterations,
+            simulation.getBlockSize(),
+            simulation.getSortType(),
+            simulation.getTotalTime(),
+            simulation.getForceCalculationTime(),
+            simulation.getReorderTime(),
+            simulation.getPotentialEnergy(),
+            simulation.getKineticEnergy(),
+            simulation.getTotalEnergy());
+
+        std::cout << "Métricas guardadas en: " << metricsFile << std::endl;
     }
 
     return 0;

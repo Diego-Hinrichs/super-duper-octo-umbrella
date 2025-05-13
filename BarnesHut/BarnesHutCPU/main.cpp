@@ -9,9 +9,12 @@
 #include <memory>
 #include <algorithm>
 #include <limits>
+#include <bitset>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
+#include <deque>
+#include <numeric>
 
 struct Vector
 {
@@ -61,11 +64,12 @@ struct Body
     Vector acceleration;
     double mass;
     bool isDynamic;
+    uint64_t mortonCode;
 
-    Body() : mass(1.0), isDynamic(true) {}
+    Body() : mass(1.0), isDynamic(true), mortonCode(0) {}
 
     Body(const Vector &pos, const Vector &vel, double m, bool dynamic = true)
-        : position(pos), velocity(vel), acceleration(), mass(m), isDynamic(dynamic) {}
+        : position(pos), velocity(vel), acceleration(), mass(m), isDynamic(dynamic), mortonCode(0) {}
 };
 
 constexpr double GRAVITY = 6.67430e-11;
@@ -86,6 +90,12 @@ enum class MassDistribution
 {
     UNIFORM,
     NORMAL
+};
+
+enum class SFCCurveType
+{
+    MORTON,
+    HILBERT
 };
 
 struct CPUOctreeNode
@@ -163,7 +173,187 @@ struct CPUOctreeNode
     }
 };
 
-class CPUBarnesHut
+inline uint32_t expandBits(uint32_t v)
+{
+    v = (v * 0x00010001u) & 0xFF0000FFu;
+    v = (v * 0x00000101u) & 0x0F00F00Fu;
+    v = (v * 0x00000011u) & 0xC30C30C3u;
+    v = (v * 0x00000005u) & 0x49249249u;
+    return v;
+}
+
+inline void rotateHilbert(uint32_t n, uint32_t *x, uint32_t *y, uint32_t *z, uint32_t rx, uint32_t ry, uint32_t rz)
+{
+    if (ry == 0)
+    {
+        if (rx == 1)
+        {
+            *x = n - 1 - *x;
+            *y = n - 1 - *y;
+        }
+        std::swap(*x, *y);
+    }
+    if (rz == 1)
+    {
+        *x = n - 1 - *x;
+        *z = n - 1 - *z;
+    }
+    std::swap(*x, *z);
+}
+
+inline uint64_t hilbertXYZToIndex(uint32_t n, uint32_t x, uint32_t y, uint32_t z)
+{
+    uint32_t rx, ry, rz, s, d = 0;
+    for (s = n / 2; s > 0; s /= 2)
+    {
+        rx = (x & s) > 0;
+        ry = (y & s) > 0;
+        rz = (z & s) > 0;
+        d += s * s * ((3 * rx) ^ ry);
+        rotateHilbert(n, &x, &y, &z, rx, ry, rz);
+    }
+    return d;
+}
+
+inline uint64_t calculateHilbertCode(double x, double y, double z,
+                                   double minX, double minY, double minZ,
+                                   double maxX, double maxY, double maxZ)
+{
+    const uint32_t n = 1 << 10; // 10 bits per dimension
+    uint32_t ix = static_cast<uint32_t>((x - minX) / (maxX - minX) * (n - 1));
+    uint32_t iy = static_cast<uint32_t>((y - minY) / (maxY - minY) * (n - 1));
+    uint32_t iz = static_cast<uint32_t>((z - minZ) / (maxZ - minZ) * (n - 1));
+    return hilbertXYZToIndex(n, ix, iy, iz);
+}
+
+inline uint64_t calculateMortonCode(double x, double y, double z,
+                                  double minX, double minY, double minZ,
+                                  double maxX, double maxY, double maxZ)
+{
+    const uint32_t n = 1 << 10; // 10 bits per dimension
+    uint32_t ix = static_cast<uint32_t>((x - minX) / (maxX - minX) * (n - 1));
+    uint32_t iy = static_cast<uint32_t>((y - minY) / (maxY - minY) * (n - 1));
+    uint32_t iz = static_cast<uint32_t>((z - minZ) / (maxZ - minZ) * (n - 1));
+
+    ix = expandBits(ix);
+    iy = expandBits(iy);
+    iz = expandBits(iz);
+
+    return (static_cast<uint64_t>(ix) << 2) | (static_cast<uint64_t>(iy) << 1) | static_cast<uint64_t>(iz);
+}
+
+class SFCDynamicReorderingStrategy
+{
+private:
+    double reorderTime;
+    double postReorderSimTime;
+    double updateTime;
+    double degradationRate;
+    int iterationsSinceReorder;
+    int currentOptimalFrequency;
+    int metricsWindowSize;
+    std::deque<double> reorderTimeHistory;
+    std::deque<double> postReorderSimTimeHistory;
+    std::deque<double> simulationTimeHistory;
+
+    int computeOptimalFrequency(int totalIterations)
+    {
+        if (reorderTimeHistory.empty() || postReorderSimTimeHistory.empty())
+            return 10;
+
+        double avgReorderTime = std::accumulate(reorderTimeHistory.begin(), reorderTimeHistory.end(), 0.0) / reorderTimeHistory.size();
+        double avgPostReorderTime = std::accumulate(postReorderSimTimeHistory.begin(), postReorderSimTimeHistory.end(), 0.0) / postReorderSimTimeHistory.size();
+
+        if (avgReorderTime == 0 || avgPostReorderTime == 0)
+            return 10;
+
+        double ratio = avgReorderTime / avgPostReorderTime;
+        int optimalFreq = static_cast<int>(std::sqrt(1.0 / ratio));
+
+        return std::max(1, std::min(optimalFreq, 100));
+    }
+
+public:
+    SFCDynamicReorderingStrategy(int windowSize = 10)
+        : reorderTime(0.0),
+          postReorderSimTime(0.0),
+          updateTime(0.0),
+          degradationRate(0.001),
+          iterationsSinceReorder(0),
+          currentOptimalFrequency(10),
+          metricsWindowSize(windowSize)
+    {
+    }
+
+    void updateMetrics(double newReorderTime, double newSimTime)
+    {
+        reorderTime = newReorderTime;
+        postReorderSimTime = newSimTime;
+
+        reorderTimeHistory.push_back(newReorderTime);
+        postReorderSimTimeHistory.push_back(newSimTime);
+
+        if (reorderTimeHistory.size() > metricsWindowSize)
+        {
+            reorderTimeHistory.pop_front();
+            postReorderSimTimeHistory.pop_front();
+        }
+
+        currentOptimalFrequency = computeOptimalFrequency(iterationsSinceReorder);
+    }
+
+    bool shouldReorder(double lastSimTime = 0.0, double lastReorderTime = 0.0)
+    {
+        iterationsSinceReorder++;
+        if (iterationsSinceReorder >= currentOptimalFrequency)
+        {
+            iterationsSinceReorder = 0;
+            return true;
+        }
+        return false;
+    }
+
+    void updateMetrics(double sortTime)
+    {
+        simulationTimeHistory.push_back(sortTime);
+        if (simulationTimeHistory.size() > metricsWindowSize)
+        {
+            simulationTimeHistory.pop_front();
+        }
+    }
+
+    void setWindowSize(int windowSize)
+    {
+        metricsWindowSize = windowSize;
+        reorderTimeHistory.clear();
+        postReorderSimTimeHistory.clear();
+        simulationTimeHistory.clear();
+    }
+
+    int getOptimalFrequency() const
+    {
+        return currentOptimalFrequency;
+    }
+
+    double getDegradationRate() const
+    {
+        return degradationRate;
+    }
+
+    void reset()
+    {
+        reorderTime = 0.0;
+        postReorderSimTime = 0.0;
+        updateTime = 0.0;
+        iterationsSinceReorder = 0;
+        currentOptimalFrequency = 10;
+        reorderTimeHistory.clear();
+        postReorderSimTimeHistory.clear();
+        simulationTimeHistory.clear();
+    }
+};
+
+class BarnesHut
 {
 private:
     std::vector<Body> bodies;
@@ -174,6 +364,7 @@ private:
     double forceCalculationTime;
     double octreeTime;
     double bboxTime;
+    double sfcTime;
     double potentialEnergy;
     double kineticEnergy;
     double totalEnergyAvg;
@@ -185,25 +376,36 @@ private:
     Vector minBound;
     Vector maxBound;
 
+    bool useSFC;
+    SFCCurveType curveType;
+    int iterationCounter;
+    SFCDynamicReorderingStrategy reorderingStrategy;
+
 public:
-    CPUBarnesHut(
+    BarnesHut(
         int numBodies,
         bool useParallelization = true,
         int threads = 0,
         unsigned int seed = static_cast<unsigned int>(time(nullptr)),
-        MassDistribution massDist = MassDistribution::UNIFORM) : nBodies(numBodies),
-                                                                 useOpenMP(useParallelization),
-                                                                 totalTime(0.0),
-                                                                 forceCalculationTime(0.0),
-                                                                 octreeTime(0.0),
-                                                                 bboxTime(0.0),
-                                                                 potentialEnergy(0.0),
-                                                                 kineticEnergy(0.0),
-                                                                 totalEnergyAvg(0.0),
-                                                                 potentialEnergyAvg(0.0),
-                                                                 kineticEnergyAvg(0.0)
+        MassDistribution massDist = MassDistribution::UNIFORM,
+        bool useSFC_ = true,
+        SFCCurveType sfcCurveType = SFCCurveType::MORTON) : nBodies(numBodies),
+                                                           useOpenMP(useParallelization),
+                                                           totalTime(0.0),
+                                                           forceCalculationTime(0.0),
+                                                           octreeTime(0.0),
+                                                           bboxTime(0.0),
+                                                           sfcTime(0.0),
+                                                           potentialEnergy(0.0),
+                                                           kineticEnergy(0.0),
+                                                           totalEnergyAvg(0.0),
+                                                           potentialEnergyAvg(0.0),
+                                                           kineticEnergyAvg(0.0),
+                                                           useSFC(useSFC_),
+                                                           curveType(sfcCurveType),
+                                                           iterationCounter(0),
+                                                           reorderingStrategy(10)
     {
-
         if (threads <= 0)
         {
             numThreads = omp_get_max_threads();
@@ -213,50 +415,34 @@ public:
             numThreads = threads;
         }
 
-        bodies.resize(numBodies);
-        initRandomBodies(seed, massDist);
-
-        minBound = Vector(std::numeric_limits<double>::max(),
-                          std::numeric_limits<double>::max(),
-                          std::numeric_limits<double>::max());
-        maxBound = Vector(std::numeric_limits<double>::lowest(),
-                          std::numeric_limits<double>::lowest(),
-                          std::numeric_limits<double>::lowest());
-
-        std::cout << "CPU Barnes-Hut Simulation created with " << numBodies << " bodies." << std::endl;
         if (useOpenMP)
         {
-            std::cout << "OpenMP enabled with " << numThreads << " threads." << std::endl;
+            omp_set_num_threads(numThreads);
         }
-        else
-        {
-            std::cout << "OpenMP disabled, using single-threaded mode." << std::endl;
-        }
+
+        initRandomBodies(seed, massDist);
     }
 
-    void initRandomBodies(unsigned int seed, MassDistribution massDist = MassDistribution::UNIFORM)
+    void initRandomBodies(unsigned int seed, MassDistribution massDist)
     {
         std::mt19937 rng(seed);
-        std::uniform_real_distribution<double> posDistrib(-100.0, 100.0);
-        std::uniform_real_distribution<double> velDistrib(-5.0, 5.0);
-        std::normal_distribution<double> normalPosDistrib(0.0, 50.0);
-        std::normal_distribution<double> normalVelDistrib(0.0, 2.5);
+        std::uniform_real_distribution<double> posDist(-1.0, 1.0);
+        std::uniform_real_distribution<double> velDist(-0.1, 0.1);
 
+        bodies.resize(nBodies);
         for (int i = 0; i < nBodies; i++)
         {
-            if (massDist == MassDistribution::UNIFORM)
+            Vector pos(posDist(rng), posDist(rng), posDist(rng));
+            Vector vel(velDist(rng), velDist(rng), velDist(rng));
+            double mass = 1.0;
+
+            if (massDist == MassDistribution::NORMAL)
             {
-                bodies[i].position = Vector(posDistrib(rng), posDistrib(rng), posDistrib(rng));
-                bodies[i].velocity = Vector(velDistrib(rng), velDistrib(rng), velDistrib(rng));
-            }
-            else
-            {
-                bodies[i].position = Vector(normalPosDistrib(rng), normalPosDistrib(rng), normalPosDistrib(rng));
-                bodies[i].velocity = Vector(normalVelDistrib(rng), normalVelDistrib(rng), normalVelDistrib(rng));
+                std::normal_distribution<double> massDist(1.0, 0.2);
+                mass = std::abs(massDist(rng));
             }
 
-            bodies[i].mass = 1.0;
-            bodies[i].isDynamic = true;
+            bodies[i] = Body(pos, vel, mass);
         }
     }
 
@@ -264,47 +450,39 @@ public:
     {
         auto start = std::chrono::high_resolution_clock::now();
 
-        minBound = Vector(std::numeric_limits<double>::max(),
-                          std::numeric_limits<double>::max(),
-                          std::numeric_limits<double>::max());
-        maxBound = Vector(std::numeric_limits<double>::lowest(),
-                          std::numeric_limits<double>::lowest(),
-                          std::numeric_limits<double>::lowest());
-
         if (useOpenMP)
         {
-            omp_set_num_threads(numThreads);
-
             std::vector<Vector> localMin(numThreads, Vector(std::numeric_limits<double>::max(),
-                                                            std::numeric_limits<double>::max(),
-                                                            std::numeric_limits<double>::max()));
+                                                          std::numeric_limits<double>::max(),
+                                                          std::numeric_limits<double>::max()));
             std::vector<Vector> localMax(numThreads, Vector(std::numeric_limits<double>::lowest(),
-                                                            std::numeric_limits<double>::lowest(),
-                                                            std::numeric_limits<double>::lowest()));
+                                                          std::numeric_limits<double>::lowest(),
+                                                          std::numeric_limits<double>::lowest()));
 
 #pragma omp parallel
             {
                 int tid = omp_get_thread_num();
-
 #pragma omp for
                 for (int i = 0; i < nBodies; i++)
                 {
-                    localMin[tid].x = std::min(localMin[tid].x, bodies[i].position.x);
-                    localMin[tid].y = std::min(localMin[tid].y, bodies[i].position.y);
-                    localMin[tid].z = std::min(localMin[tid].z, bodies[i].position.z);
-
-                    localMax[tid].x = std::max(localMax[tid].x, bodies[i].position.x);
-                    localMax[tid].y = std::max(localMax[tid].y, bodies[i].position.y);
-                    localMax[tid].z = std::max(localMax[tid].z, bodies[i].position.z);
+                    const Vector &pos = bodies[i].position;
+                    localMin[tid].x = std::min(localMin[tid].x, pos.x);
+                    localMin[tid].y = std::min(localMin[tid].y, pos.y);
+                    localMin[tid].z = std::min(localMin[tid].z, pos.z);
+                    localMax[tid].x = std::max(localMax[tid].x, pos.x);
+                    localMax[tid].y = std::max(localMax[tid].y, pos.y);
+                    localMax[tid].z = std::max(localMax[tid].z, pos.z);
                 }
             }
 
-            for (int i = 0; i < numThreads; i++)
+            minBound = localMin[0];
+            maxBound = localMax[0];
+
+            for (int i = 1; i < numThreads; i++)
             {
                 minBound.x = std::min(minBound.x, localMin[i].x);
                 minBound.y = std::min(minBound.y, localMin[i].y);
                 minBound.z = std::min(minBound.z, localMin[i].z);
-
                 maxBound.x = std::max(maxBound.x, localMax[i].x);
                 maxBound.y = std::max(maxBound.y, localMax[i].y);
                 maxBound.z = std::max(maxBound.z, localMax[i].z);
@@ -312,127 +490,166 @@ public:
         }
         else
         {
+            minBound = Vector(std::numeric_limits<double>::max(),
+                            std::numeric_limits<double>::max(),
+                            std::numeric_limits<double>::max());
+            maxBound = Vector(std::numeric_limits<double>::lowest(),
+                            std::numeric_limits<double>::lowest(),
+                            std::numeric_limits<double>::lowest());
+
             for (int i = 0; i < nBodies; i++)
             {
-                minBound.x = std::min(minBound.x, bodies[i].position.x);
-                minBound.y = std::min(minBound.y, bodies[i].position.y);
-                minBound.z = std::min(minBound.z, bodies[i].position.z);
-
-                maxBound.x = std::max(maxBound.x, bodies[i].position.x);
-                maxBound.y = std::max(maxBound.y, bodies[i].position.y);
-                maxBound.z = std::max(maxBound.z, bodies[i].position.z);
+                const Vector &pos = bodies[i].position;
+                minBound.x = std::min(minBound.x, pos.x);
+                minBound.y = std::min(minBound.y, pos.y);
+                minBound.z = std::min(minBound.z, pos.z);
+                maxBound.x = std::max(maxBound.x, pos.x);
+                maxBound.y = std::max(maxBound.y, pos.y);
+                maxBound.z = std::max(maxBound.z, pos.z);
             }
         }
 
-        double padding = std::max(1.0e-10, (maxBound.x - minBound.x) * 0.01);
-        minBound.x -= padding;
-        minBound.y -= padding;
-        minBound.z -= padding;
-        maxBound.x += padding;
-        maxBound.y += padding;
-        maxBound.z += padding;
-
-        double sizeX = maxBound.x - minBound.x;
-        double sizeY = maxBound.y - minBound.y;
-        double sizeZ = maxBound.z - minBound.z;
-        double maxSize = std::max(std::max(sizeX, sizeY), sizeZ);
-
-        double centerX = (minBound.x + maxBound.x) * 0.5;
-        double centerY = (minBound.y + maxBound.y) * 0.5;
-        double centerZ = (minBound.z + maxBound.z) * 0.5;
-
-        minBound.x = centerX - maxSize * 0.5;
-        minBound.y = centerY - maxSize * 0.5;
-        minBound.z = centerZ - maxSize * 0.5;
-
-        maxBound.x = centerX + maxSize * 0.5;
-        maxBound.y = centerY + maxSize * 0.5;
-        maxBound.z = centerZ + maxSize * 0.5;
-
         auto end = std::chrono::high_resolution_clock::now();
         bboxTime = std::chrono::duration<double, std::milli>(end - start).count();
+    }
+
+    void computeMortonCodes()
+    {
+        if (!useSFC)
+            return;
+
+        auto start = std::chrono::high_resolution_clock::now();
+
+        if (useOpenMP)
+        {
+#pragma omp parallel for
+            for (int i = 0; i < nBodies; i++)
+            {
+                if (curveType == SFCCurveType::MORTON)
+                {
+                    bodies[i].mortonCode = calculateMortonCode(
+                        bodies[i].position.x, bodies[i].position.y, bodies[i].position.z,
+                        minBound.x, minBound.y, minBound.z,
+                        maxBound.x, maxBound.y, maxBound.z);
+                }
+                else
+                {
+                    bodies[i].mortonCode = calculateHilbertCode(
+                        bodies[i].position.x, bodies[i].position.y, bodies[i].position.z,
+                        minBound.x, minBound.y, minBound.z,
+                        maxBound.x, maxBound.y, maxBound.z);
+                }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < nBodies; i++)
+            {
+                if (curveType == SFCCurveType::MORTON)
+                {
+                    bodies[i].mortonCode = calculateMortonCode(
+                        bodies[i].position.x, bodies[i].position.y, bodies[i].position.z,
+                        minBound.x, minBound.y, minBound.z,
+                        maxBound.x, maxBound.y, maxBound.z);
+                }
+                else
+                {
+                    bodies[i].mortonCode = calculateHilbertCode(
+                        bodies[i].position.x, bodies[i].position.y, bodies[i].position.z,
+                        minBound.x, minBound.y, minBound.z,
+                        maxBound.x, maxBound.y, maxBound.z);
+                }
+            }
+        }
+
+        auto end = std::chrono::high_resolution_clock::now();
+        sfcTime = std::chrono::duration<double, std::milli>(end - start).count();
+    }
+
+    void sortBodiesBySFC()
+    {
+        if (!useSFC)
+            return;
+
+        auto start = std::chrono::high_resolution_clock::now();
+
+        std::sort(bodies.begin(), bodies.end(),
+                 [](const Body &a, const Body &b)
+                 {
+                     return a.mortonCode < b.mortonCode;
+                 });
+
+        auto end = std::chrono::high_resolution_clock::now();
+        sfcTime += std::chrono::duration<double, std::milli>(end - start).count();
+    }
+
+    void reorderBodies()
+    {
+        if (!useSFC)
+            return;
+
+        computeBoundingBox();
+        computeMortonCodes();
+        sortBodiesBySFC();
     }
 
     void buildOctree()
     {
         auto start = std::chrono::high_resolution_clock::now();
 
-        root.reset(new CPUOctreeNode());
+        computeBoundingBox();
+        if (useSFC)
+        {
+            computeMortonCodes();
+            sortBodiesBySFC();
+        }
 
-        Vector center = Vector(
-            (minBound.x + maxBound.x) * 0.5,
-            (minBound.y + maxBound.y) * 0.5,
-            (minBound.z + maxBound.z) * 0.5);
-        double halfWidth = std::max(
-            std::max(maxBound.x - center.x, maxBound.y - center.y),
-            maxBound.z - center.z);
-
-        root->center = center;
-        root->halfWidth = halfWidth;
+        root = std::make_unique<CPUOctreeNode>();
+        root->center = (minBound + maxBound) * 0.5;
+        root->halfWidth = std::max({maxBound.x - minBound.x,
+                                  maxBound.y - minBound.y,
+                                  maxBound.z - minBound.z}) *
+                         0.5;
 
         for (int i = 0; i < nBodies; i++)
         {
-            CPUOctreeNode *node = root.get();
-
-            int level = 0;
-            const int MAX_LEVEL = 20;
-
-            while (!node->isLeaf && level < MAX_LEVEL)
+            CPUOctreeNode *current = root.get();
+            while (!current->isLeaf)
             {
-                int octant = node->getOctant(bodies[i].position);
-
-                if (!node->children[octant])
+                int octant = current->getOctant(bodies[i].position);
+                if (!current->children[octant])
                 {
-                    node->children[octant] = new CPUOctreeNode();
-                    node->children[octant]->center = node->getOctantCenter(octant);
-                    node->children[octant]->halfWidth = node->halfWidth * 0.5;
+                    current->children[octant] = new CPUOctreeNode();
+                    current->children[octant]->center = current->getOctantCenter(octant);
+                    current->children[octant]->halfWidth = current->halfWidth * 0.5;
                 }
-
-                node = node->children[octant];
-                level++;
+                current = current->children[octant];
             }
 
-            if (node->bodyIndex == -1)
+            if (current->bodyIndex == -1)
             {
-                node->bodyIndex = i;
-                node->centerOfMass = bodies[i].position;
-                node->totalMass = bodies[i].mass;
+                current->bodyIndex = i;
             }
             else
             {
-                if (level < MAX_LEVEL)
+                current->isLeaf = false;
+                int oldBodyIndex = current->bodyIndex;
+                current->bodyIndex = -1;
+
+                int octant = current->getOctant(bodies[oldBodyIndex].position);
+                current->children[octant] = new CPUOctreeNode();
+                current->children[octant]->center = current->getOctantCenter(octant);
+                current->children[octant]->halfWidth = current->halfWidth * 0.5;
+                current->children[octant]->bodyIndex = oldBodyIndex;
+
+                octant = current->getOctant(bodies[i].position);
+                if (!current->children[octant])
                 {
-                    int existingIdx = node->bodyIndex;
-
-                    node->isLeaf = false;
-                    node->bodyIndex = -1;
-
-                    int octant = node->getOctant(bodies[existingIdx].position);
-                    if (!node->children[octant])
-                    {
-                        node->children[octant] = new CPUOctreeNode();
-                        node->children[octant]->center = node->getOctantCenter(octant);
-                        node->children[octant]->halfWidth = node->halfWidth * 0.5;
-                    }
-                    node->children[octant]->bodyIndex = existingIdx;
-                    node->children[octant]->centerOfMass = bodies[existingIdx].position;
-                    node->children[octant]->totalMass = bodies[existingIdx].mass;
-
-                    octant = node->getOctant(bodies[i].position);
-                    if (!node->children[octant])
-                    {
-                        node->children[octant] = new CPUOctreeNode();
-                        node->children[octant]->center = node->getOctantCenter(octant);
-                        node->children[octant]->halfWidth = node->halfWidth * 0.5;
-                    }
-                    node->children[octant]->bodyIndex = i;
-                    node->children[octant]->centerOfMass = bodies[i].position;
-                    node->children[octant]->totalMass = bodies[i].mass;
+                    current->children[octant] = new CPUOctreeNode();
+                    current->children[octant]->center = current->getOctantCenter(octant);
+                    current->children[octant]->halfWidth = current->halfWidth * 0.5;
                 }
-                else
-                {
-                    node->bodies.push_back(i);
-                }
+                current->children[octant]->bodyIndex = i;
             }
         }
 
@@ -449,42 +666,31 @@ public:
 
         if (node->isLeaf)
         {
+            if (node->bodyIndex != -1)
+            {
+                node->centerOfMass = bodies[node->bodyIndex].position;
+                node->totalMass = bodies[node->bodyIndex].mass;
+            }
             return;
         }
 
-        node->centerOfMass = Vector(0.0, 0.0, 0.0);
-        node->totalMass = 0.0;
+        Vector totalPos;
+        double totalMass = 0.0;
 
         for (int i = 0; i < 8; i++)
         {
             if (node->children[i])
             {
                 calculateCenterOfMass(node->children[i]);
-
-                if (node->children[i]->totalMass > 0.0)
-                {
-                    node->centerOfMass.x += node->children[i]->centerOfMass.x * node->children[i]->totalMass;
-                    node->centerOfMass.y += node->children[i]->centerOfMass.y * node->children[i]->totalMass;
-                    node->centerOfMass.z += node->children[i]->centerOfMass.z * node->children[i]->totalMass;
-                    node->totalMass += node->children[i]->totalMass;
-                }
+                totalPos = totalPos + node->children[i]->centerOfMass * node->children[i]->totalMass;
+                totalMass += node->children[i]->totalMass;
             }
         }
 
-        for (size_t i = 0; i < node->bodies.size(); i++)
+        if (totalMass > 0)
         {
-            int bodyIdx = node->bodies[i];
-            node->centerOfMass.x += bodies[bodyIdx].position.x * bodies[bodyIdx].mass;
-            node->centerOfMass.y += bodies[bodyIdx].position.y * bodies[bodyIdx].mass;
-            node->centerOfMass.z += bodies[bodyIdx].position.z * bodies[bodyIdx].mass;
-            node->totalMass += bodies[bodyIdx].mass;
-        }
-
-        if (node->totalMass > 0.0)
-        {
-            node->centerOfMass.x /= node->totalMass;
-            node->centerOfMass.y /= node->totalMass;
-            node->centerOfMass.z /= node->totalMass;
+            node->centerOfMass = totalPos * (1.0 / totalMass);
+            node->totalMass = totalMass;
         }
     }
 
@@ -493,32 +699,20 @@ public:
         if (!node)
             return;
 
-        if (node->totalMass <= 0.0)
+        Vector diff = node->centerOfMass - body.position;
+        double distSquared = diff.lengthSquared();
+
+        if (distSquared < 1e-10)
             return;
 
-        Vector r = node->centerOfMass - body.position;
-        double distSqr = r.lengthSquared();
+        double s = node->halfWidth * 2.0;
+        double ratio = s * s / distSquared;
 
-        if (node->isLeaf || (node->halfWidth * 2.0) / sqrt(distSqr) < THETA)
+        if (node->isLeaf || ratio < THETA * THETA)
         {
-            if (node->isLeaf && node->bodyIndex != -1 &&
-                body.position.x == bodies[node->bodyIndex].position.x &&
-                body.position.y == bodies[node->bodyIndex].position.y &&
-                body.position.z == bodies[node->bodyIndex].position.z)
-            {
-                return;
-            }
-
-            double dist = sqrt(distSqr + (E * E));
-
-            if (dist < COLLISION_TH)
-                return;
-
-            double forceMag = GRAVITY * body.mass * node->totalMass / (dist * dist * dist);
-
-            body.acceleration.x += (r.x * forceMag) / body.mass;
-            body.acceleration.y += (r.y * forceMag) / body.mass;
-            body.acceleration.z += (r.z * forceMag) / body.mass;
+            double force = GRAVITY * body.mass * node->totalMass / distSquared;
+            Vector forceVec = diff * (force / sqrt(distSquared));
+            body.acceleration = body.acceleration + forceVec * (1.0 / body.mass);
         }
         else
         {
@@ -536,53 +730,21 @@ public:
     {
         auto start = std::chrono::high_resolution_clock::now();
 
-        if (!root)
-        {
-            std::cerr << "Error: Octree not built before force computation" << std::endl;
-            return;
-        }
-
         if (useOpenMP)
         {
-            omp_set_num_threads(numThreads);
-
 #pragma omp parallel for
             for (int i = 0; i < nBodies; i++)
             {
-                if (!bodies[i].isDynamic)
-                    continue;
-
-                bodies[i].acceleration = Vector(0.0, 0.0, 0.0);
-
+                bodies[i].acceleration = Vector();
                 computeForceFromNode(bodies[i], root.get());
-
-                bodies[i].velocity.x += bodies[i].acceleration.x * DT;
-                bodies[i].velocity.y += bodies[i].acceleration.y * DT;
-                bodies[i].velocity.z += bodies[i].acceleration.z * DT;
-
-                bodies[i].position.x += bodies[i].velocity.x * DT;
-                bodies[i].position.y += bodies[i].velocity.y * DT;
-                bodies[i].position.z += bodies[i].velocity.z * DT;
             }
         }
         else
         {
             for (int i = 0; i < nBodies; i++)
             {
-                if (!bodies[i].isDynamic)
-                    continue;
-
-                bodies[i].acceleration = Vector(0.0, 0.0, 0.0);
-
+                bodies[i].acceleration = Vector();
                 computeForceFromNode(bodies[i], root.get());
-
-                bodies[i].velocity.x += bodies[i].acceleration.x * DT;
-                bodies[i].velocity.y += bodies[i].acceleration.y * DT;
-                bodies[i].velocity.z += bodies[i].acceleration.z * DT;
-
-                bodies[i].position.x += bodies[i].velocity.x * DT;
-                bodies[i].position.y += bodies[i].velocity.y * DT;
-                bodies[i].position.z += bodies[i].velocity.z * DT;
             }
         }
 
@@ -595,85 +757,109 @@ public:
         potentialEnergy = 0.0;
         kineticEnergy = 0.0;
 
-        for (int i = 0; i < nBodies; i++)
+        if (useOpenMP)
         {
-            for (int j = i + 1; j < nBodies; j++)
+#pragma omp parallel
             {
-                Vector r = bodies[j].position - bodies[i].position;
+                double localPotential = 0.0;
+                double localKinetic = 0.0;
 
-                double distSqr = r.lengthSquared() + (E * E);
-                double dist = sqrt(distSqr);
+#pragma omp for
+                for (int i = 0; i < nBodies; i++)
+                {
+                    for (int j = i + 1; j < nBodies; j++)
+                    {
+                        Vector diff = bodies[i].position - bodies[j].position;
+                        double dist = diff.length();
+                        if (dist > 0)
+                        {
+                            localPotential -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
+                        }
+                    }
+                    localKinetic += 0.5 * bodies[i].mass * bodies[i].velocity.lengthSquared();
+                }
 
-                if (dist < COLLISION_TH)
-                    continue;
-
-                potentialEnergy -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
+#pragma omp critical
+                {
+                    potentialEnergy += localPotential;
+                    kineticEnergy += localKinetic;
+                }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < nBodies; i++)
+            {
+                for (int j = i + 1; j < nBodies; j++)
+                {
+                    Vector diff = bodies[i].position - bodies[j].position;
+                    double dist = diff.length();
+                    if (dist > 0)
+                    {
+                        potentialEnergy -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
+                    }
+                }
+                kineticEnergy += 0.5 * bodies[i].mass * bodies[i].velocity.lengthSquared();
             }
         }
 
-        for (int i = 0; i < nBodies; i++)
-        {
-            if (!bodies[i].isDynamic)
-                continue;
-
-            double vSquared = bodies[i].velocity.lengthSquared();
-            kineticEnergy += 0.5 * bodies[i].mass * vSquared;
-        }
+        totalEnergyAvg = (totalEnergyAvg * iterationCounter + potentialEnergy + kineticEnergy) / (iterationCounter + 1);
+        potentialEnergyAvg = (potentialEnergyAvg * iterationCounter + potentialEnergy) / (iterationCounter + 1);
+        kineticEnergyAvg = (kineticEnergyAvg * iterationCounter + kineticEnergy) / (iterationCounter + 1);
     }
 
     void update()
     {
+        for (int i = 0; i < nBodies; i++)
+        {
+            bodies[i].velocity = bodies[i].velocity + bodies[i].acceleration * DT;
+            bodies[i].position = bodies[i].position + bodies[i].velocity * DT;
+        }
+
+        if (useSFC && reorderingStrategy.shouldReorder())
+        {
+            reorderBodies();
+        }
+
+        iterationCounter++;
+    }
+
+    void printPerformanceMetrics() const
+    {
+        std::cout << "Performance Metrics:" << std::endl;
+        std::cout << "Total Time: " << totalTime << " ms" << std::endl;
+        std::cout << "Force Calculation Time: " << forceCalculationTime << " ms" << std::endl;
+        std::cout << "Tree Build Time: " << octreeTime << " ms" << std::endl;
+        if (useSFC)
+        {
+            std::cout << "SFC Time: " << sfcTime << " ms" << std::endl;
+        }
+        std::cout << "Bounding Box Time: " << bboxTime << " ms" << std::endl;
+        std::cout << "Potential Energy: " << potentialEnergy << std::endl;
+        std::cout << "Kinetic Energy: " << kineticEnergy << std::endl;
+        std::cout << "Total Energy: " << (potentialEnergy + kineticEnergy) << std::endl;
+    }
+
+    void run(int steps)
+    {
         auto start = std::chrono::high_resolution_clock::now();
 
-        buildOctree();
-        computeForces();
-
-        calculateEnergies();
+        for (int step = 0; step < steps; step++)
+        {
+            buildOctree();
+            computeForces();
+            calculateEnergies();
+            update();
+        }
 
         auto end = std::chrono::high_resolution_clock::now();
         totalTime = std::chrono::duration<double, std::milli>(end - start).count();
     }
 
-    void printPerformanceMetrics() const
-    {
-        std::cout << "Performance Metrics (ms):" << std::endl;
-        std::cout << "  Total time:           " << std::fixed << std::setprecision(3) << totalTime << std::endl;
-        std::cout << "  Bounding box:         " << std::fixed << std::setprecision(3) << bboxTime << std::endl;
-        std::cout << "  Octree construction:  " << std::fixed << std::setprecision(3) << octreeTime << std::endl;
-        std::cout << "  Force calculation:    " << std::fixed << std::setprecision(3) << forceCalculationTime << std::endl;
-    }
-
-    void run(int steps)
-    {
-        std::cout << "Running CPU Barnes-Hut simulation for " << steps << " steps..." << std::endl;
-
-        double totalSim = 0.0;
-        double totalPotentialEnergy = 0.0;
-        double totalKineticEnergy = 0.0;
-
-        for (int step = 0; step < steps; step++)
-        {
-            update();
-            totalSim += totalTime;
-            totalPotentialEnergy += potentialEnergy;
-            totalKineticEnergy += kineticEnergy;
-        }
-
-        potentialEnergyAvg = totalPotentialEnergy / steps;
-        kineticEnergyAvg = totalKineticEnergy / steps;
-        totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
-
-        std::cout << "Simulation completed in " << totalSim << " ms." << std::endl;
-        std::cout << "Average step time: " << totalSim / steps << " ms." << std::endl;
-        std::cout << "Average Energy Values:" << std::endl;
-        std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
-        std::cout << "  Kinetic Energy:   " << std::scientific << std::setprecision(6) << kineticEnergyAvg << std::endl;
-        std::cout << "  Total Energy:     " << std::scientific << std::setprecision(6) << totalEnergyAvg << std::endl;
-    }
-
     double getTotalTime() const { return totalTime; }
     double getForceCalculationTime() const { return forceCalculationTime; }
     double getTreeBuildTime() const { return octreeTime; }
+    double getSfcTime() const { return sfcTime; }
     double getPotentialEnergy() const { return potentialEnergy; }
     double getKineticEnergy() const { return kineticEnergy; }
     double getTotalEnergy() const { return potentialEnergy + kineticEnergy; }
@@ -683,6 +869,9 @@ public:
     int getNumBodies() const { return nBodies; }
     int getNumThreads() const { return numThreads; }
     double getTheta() const { return THETA; }
+    int getSortType() const { return useSFC ? 1 : 0; }
+    bool isDynamicReordering() const { return useSFC; }
+    int getOptimalReorderFrequency() const { return reorderingStrategy.getOptimalFrequency(); }
 };
 
 bool dirExists(const std::string &dirName)
@@ -804,126 +993,77 @@ void saveMetrics(const std::string &filename,
 int main(int argc, char *argv[])
 {
     int nBodies = 1000;
-    bool useOpenMP = true;
-    int threads = 0;
-    BodyDistribution dist = BodyDistribution::RANDOM_UNIFORM;
-    MassDistribution massDist = MassDistribution::UNIFORM;
     int steps = 100;
-    bool saveMetricsToFile = false;
-    std::string metricsFile = "./BarnesHutCPU_metrics.csv";
+    int threads = 0;
+    bool useOpenMP = true;
+    MassDistribution massDist = MassDistribution::UNIFORM;
+    bool useSFC = true;
+    SFCCurveType curveType = SFCCurveType::MORTON;
 
     for (int i = 1; i < argc; i++)
     {
         std::string arg = argv[i];
-
         if (arg == "-n" && i + 1 < argc)
         {
             nBodies = std::stoi(argv[++i]);
         }
-        else if (arg == "--no-openmp")
-        {
-            useOpenMP = false;
-        }
-        else if (arg == "--threads" && i + 1 < argc)
-        {
-            threads = std::stoi(argv[++i]);
-        }
-        else if (arg == "--distribution" && i + 1 < argc)
-        {
-            std::string distStr = argv[++i];
-            if (distStr == "random")
-            {
-                dist = BodyDistribution::RANDOM_UNIFORM;
-            }
-            else if (distStr == "solar")
-            {
-                dist = BodyDistribution::SOLAR_SYSTEM;
-            }
-            else if (distStr == "galaxy")
-            {
-                dist = BodyDistribution::GALAXY;
-            }
-            else if (distStr == "collision")
-            {
-                dist = BodyDistribution::COLLISION;
-            }
-        }
-        else if (arg == "--mass" && i + 1 < argc)
-        {
-            std::string massStr = argv[++i];
-            if (massStr == "uniform")
-            {
-                massDist = MassDistribution::UNIFORM;
-            }
-            else if (massStr == "normal")
-            {
-                massDist = MassDistribution::NORMAL;
-            }
-        }
-        else if (arg == "--steps" && i + 1 < argc)
+        else if (arg == "-s" && i + 1 < argc)
         {
             steps = std::stoi(argv[++i]);
         }
-        else if (arg == "--save-metrics")
+        else if (arg == "-t" && i + 1 < argc)
         {
-            saveMetricsToFile = true;
+            threads = std::stoi(argv[++i]);
         }
-        else if (arg == "--metrics-file" && i + 1 < argc)
+        else if (arg == "-no-omp")
         {
-            metricsFile = argv[++i];
+            useOpenMP = false;
         }
-        else if (arg == "--help")
+        else if (arg == "-no-sfc")
         {
-            std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
-            std::cout << "Options:" << std::endl;
-            std::cout << "  -n N          Set number of bodies (default: 1000)" << std::endl;
-            std::cout << "  --no-openmp         Disable OpenMP parallelization" << std::endl;
-            std::cout << "  --threads N         Set number of threads (default: auto)" << std::endl;
-            std::cout << "  --distribution TYPE Set body distribution (random, solar, galaxy, collision)" << std::endl;
-            std::cout << "  --mass TYPE         Set mass distribution (uniform, normal)" << std::endl;
-            std::cout << "  --steps N           Set simulation steps (default: 100)" << std::endl;
-            std::cout << "  --save-metrics      Save performance metrics to a CSV file" << std::endl;
-            std::cout << "  --metrics-file FILE Set the output CSV file (default: metrics.csv)" << std::endl;
-            std::cout << "  --help              Show this help message" << std::endl;
-            return 0;
+            useSFC = false;
+        }
+        else if (arg == "-hilbert")
+        {
+            curveType = SFCCurveType::HILBERT;
+        }
+        else if (arg == "-normal")
+        {
+            massDist = MassDistribution::NORMAL;
         }
     }
 
-    CPUBarnesHut simulation(
+    std::string metricsFile = "BarnesHutCPU_metrics.csv";
+    std::ifstream checkFile(metricsFile);
+    if (!checkFile.good())
+    {
+        initializeCsv(metricsFile);
+    }
+
+    BarnesHut simulation(
         nBodies,
         useOpenMP,
         threads,
         time(nullptr),
-        massDist);
+        massDist,
+        useSFC,
+        curveType);
 
     simulation.run(steps);
+    simulation.printPerformanceMetrics();
 
-    if (saveMetricsToFile)
-    {
-        bool fileExists = false;
-        std::ifstream checkFile(metricsFile);
-        if (checkFile.good())
-        {
-            fileExists = true;
-        }
-        checkFile.close();
-
-        initializeCsv(metricsFile, fileExists);
-        saveMetrics(
-            metricsFile,
-            simulation.getNumBodies(),
-            steps,
-            simulation.getNumThreads(),
-            simulation.getTheta(),
-            simulation.getTotalTime(),
-            simulation.getForceCalculationTime(),
-            simulation.getTreeBuildTime(),
-            simulation.getPotentialEnergyAvg(),
-            simulation.getKineticEnergyAvg(),
-            simulation.getTotalEnergyAvg());
-
-        std::cout << "Métricas guardadas en: " << metricsFile << std::endl;
-    }
+    saveMetrics(
+        metricsFile,
+        simulation.getNumBodies(),
+        steps,
+        simulation.getNumThreads(),
+        simulation.getTheta(),
+        simulation.getTotalTime(),
+        simulation.getForceCalculationTime(),
+        simulation.getTreeBuildTime(),
+        simulation.getPotentialEnergy(),
+        simulation.getKineticEnergy(),
+        simulation.getTotalEnergy());
 
     return 0;
 }
