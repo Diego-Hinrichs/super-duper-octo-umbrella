@@ -626,16 +626,16 @@ public:
     void printPerformanceMetrics() const
     {
         std::cout << "Performance Metrics:" << std::endl;
-        std::cout << "Total Time: " << totalTime << " ms" << std::endl;
-        std::cout << "Force Calculation Time: " << forceCalculationTime << " ms" << std::endl;
+        std::cout << "Total Time: " << std::fixed << std::setprecision(2) << totalTime << " ms" << std::endl;
+        std::cout << "Force Calculation Time: " << std::fixed << std::setprecision(2) << forceCalculationTime << " ms" << std::endl;
         if (useSFC)
         {
-            std::cout << "Reorder Time: " << reorderTime << " ms" << std::endl;
-            std::cout << "Bounding Box Time: " << bboxTime << " ms" << std::endl;
+            std::cout << "Reorder Time: " << std::fixed << std::setprecision(2) << reorderTime << " ms" << std::endl;
+            std::cout << "Bounding Box Time: " << std::fixed << std::setprecision(2) << bboxTime << " ms" << std::endl;
         }
-        std::cout << "Potential Energy: " << potentialEnergy << std::endl;
-        std::cout << "Kinetic Energy: " << kineticEnergy << std::endl;
-        std::cout << "Total Energy: " << (potentialEnergy + kineticEnergy) << std::endl;
+        std::cout << "Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergy << std::endl;
+        std::cout << "Kinetic Energy: " << std::scientific << std::setprecision(6) << kineticEnergy << std::endl;
+        std::cout << "Total Energy: " << std::scientific << std::setprecision(6) << (potentialEnergy + kineticEnergy) << std::endl;
     }
 
     void run(int steps)

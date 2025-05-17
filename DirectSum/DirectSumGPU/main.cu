@@ -920,17 +920,17 @@ public:
     void printPerformance()
     {
         printf("Performance Metrics:\n");
-        printf("  Force calculation: %.3f ms\n", metrics.forceTimeMs);
+        printf("  Force calculation: %.2f ms\n", metrics.forceTimeMs);
         if (useSFC)
         {
-            printf("  Reordering: %.3f ms\n", metrics.reorderTimeMs);
+            printf("  Reordering: %.2f ms\n", metrics.reorderTimeMs);
             if (useDynamicReordering)
             {
                 printf("  Optimal reorder freq: %d\n", reorderingStrategy.getOptimalFrequency());
                 printf("  Degradation rate: %.6f ms/iter\n", reorderingStrategy.getDegradationRate());
             }
         }
-        printf("  Total update: %.3f ms\n", metrics.totalTimeMs);
+        printf("  Total update: %.2f ms\n", metrics.totalTimeMs);
     }
 
     void runSimulation(int numIterations, int printFreq = 10)
@@ -954,7 +954,7 @@ public:
             }
         }
 
-        printf("Simulation completed in %.3f ms (avg %.3f ms per iteration)\n",
+        printf("Simulation completed in %.2f ms (avg %.2f ms per iteration)\n",
                totalTime, totalTime / numIterations);
     }
 

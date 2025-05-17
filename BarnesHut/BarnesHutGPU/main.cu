@@ -2382,19 +2382,17 @@ public:
     void printPerformance()
     {
         printf("Performance Metrics:\n");
-        printf("  Reset:       %.3f ms\n", metrics.resetTimeMs);
-        printf("  Bounding box: %.3f ms\n", metrics.bboxTimeMs);
-        printf("  Tree build:   %.3f ms\n", metrics.buildTimeMs);
-        printf("  Force calc:   %.3f ms\n", metrics.forceTimeMs);
+        printf("  Reset:       %.2f ms\n", metrics.resetTimeMs);
+        printf("  Bounding box: %.2f ms\n", metrics.bboxTimeMs);
+        printf("  Tree build:   %.2f ms\n", metrics.buildTimeMs);
+        printf("  Force calc:   %.2f ms\n", metrics.forceTimeMs);
         if (useSFC)
         {
-            printf("  Reordering:   %.3f ms\n", metrics.reorderTimeMs);
+            printf("  Reordering:   %.2f ms\n", metrics.reorderTimeMs);
             printf("  Optimal reorder freq: %d\n", reorderingStrategy.getOptimalFrequency());
             printf("  Degradation rate: %.6f ms/iter\n", reorderingStrategy.getDegradationRate());
-            printf("  Performance ratio: %.3f\n", reorderingStrategy.getPerformanceRatio());
-            printf("  Performance plateau: %s\n", reorderingStrategy.isPerformancePlateau() ? "yes" : "no");
         }
-        printf("  Total update: %.3f ms\n", metrics.totalTimeMs);
+        printf("  Total update: %.2f ms\n", metrics.totalTimeMs);
     }
 
     void runSimulation(int numIterations, int printFreq = 10)
@@ -2483,15 +2481,15 @@ public:
 
         std::cout << "Simulation complete." << std::endl;
         std::cout << "Performance Summary:" << std::endl;
-        std::cout << "  Average time per step: " << totalTime / steps << " ms" << std::endl;
-        std::cout << "  Min time: " << minTime << " ms" << std::endl;
-        std::cout << "  Max time: " << maxTime << " ms" << std::endl;
-        std::cout << "  Build tree: " << totalBuildTime / steps << " ms" << std::endl;
-        std::cout << "  Bounding box: " << totalBboxTime / steps << " ms" << std::endl;
-        std::cout << "  Compute forces: " << totalForceTime / steps << " ms" << std::endl;
+        std::cout << "  Average time per step: " << std::fixed << std::setprecision(2) << totalTime / steps << " ms" << std::endl;
+        std::cout << "  Min time: " << std::fixed << std::setprecision(2) << minTime << " ms" << std::endl;
+        std::cout << "  Max time: " << std::fixed << std::setprecision(2) << maxTime << " ms" << std::endl;
+        std::cout << "  Build tree: " << std::fixed << std::setprecision(2) << totalBuildTime / steps << " ms" << std::endl;
+        std::cout << "  Bounding box: " << std::fixed << std::setprecision(2) << totalBboxTime / steps << " ms" << std::endl;
+        std::cout << "  Compute forces: " << std::fixed << std::setprecision(2) << totalForceTime / steps << " ms" << std::endl;
         if (useSFC)
         {
-            std::cout << "  Reordering: " << totalReorderTime / steps << " ms" << std::endl;
+            std::cout << "  Reordering: " << std::fixed << std::setprecision(2) << totalReorderTime / steps << " ms" << std::endl;
         }
         std::cout << "Average Energy Values:" << std::endl;
         std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
