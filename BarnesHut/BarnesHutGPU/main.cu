@@ -18,9 +18,6 @@
 #include <thrust/device_vector.h>
 #include <thrust/sequence.h>
 
-__global__ void extractPositionsKernel(struct Body *bodies, struct Vector *positions, int n);
-__global__ void calculateSFCKeysKernel(struct Vector *positions, uint64_t *keys, int nBodies,
-                                       struct Vector minBound, struct Vector maxBound, bool isHilbert);
 __global__ void extractPositionsAndCalculateKeysKernel(Body *bodies, uint64_t *keys, int nBodies, Vector minBound, Vector maxBound, bool isHilbert);
 
 struct Vector
@@ -152,6 +149,87 @@ namespace sfc
         HILBERT
     };
 
+    __device__ int g_hilbert_counters[2];
+
+    __global__ void fastHilbertPartitionKernel(
+        const Body *bodies, int *indices, int numBodies,
+        int axis, int bitPos, bool direction, int *leftCount)
+    {
+        extern __shared__ int s_flags[];
+        
+        int tid = threadIdx.x;
+        int gid = blockIdx.x * blockDim.x + tid;
+        
+        if (tid < blockDim.x) {
+            s_flags[tid] = 0;
+        }
+        __syncthreads();
+        
+        int flag = 0;
+        if (gid < numBodies) {
+            int bodyIdx = indices[gid];
+            
+            double value;
+            switch(axis) {
+                case 0: value = bodies[bodyIdx].position.x; break;
+                case 1: value = bodies[bodyIdx].position.y; break;
+                case 2: value = bodies[bodyIdx].position.z; break;
+            }
+            
+            uint32_t intValue = *((uint32_t*)&value);
+            bool bit = (intValue >> bitPos) & 1;
+            
+            if (direction) bit = !bit;
+            
+            flag = (bit == 0) ? 1 : 0;
+        }
+        
+        s_flags[tid] = flag;
+        __syncthreads();
+        
+        for (int stride = blockDim.x/2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                s_flags[tid] += s_flags[tid + stride];
+            }
+            __syncthreads();
+        }
+        
+        if (tid == 0 && s_flags[0] > 0) {
+            atomicAdd(leftCount, s_flags[0]);
+        }
+    }
+    
+    __global__ void fastHilbertReorderKernel(
+        const Body *bodies, int *oldIndices, int *newIndices, int numBodies,
+        int axis, int bitPos, bool direction, int leftSize)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= numBodies) return;
+        
+        int bodyIdx = oldIndices[idx];
+        
+        double value;
+        switch(axis) {
+            case 0: value = bodies[bodyIdx].position.x; break;
+            case 1: value = bodies[bodyIdx].position.y; break;
+            case 2: value = bodies[bodyIdx].position.z; break;
+        }
+        
+        uint32_t intValue = *((uint32_t*)&value);
+        bool bit = (intValue >> bitPos) & 1;
+        
+        if (direction) bit = !bit;
+        
+        int destIdx;
+        if (bit == 0) {
+            destIdx = atomicAdd(&g_hilbert_counters[0], 1);
+        } else {
+            destIdx = leftSize + atomicAdd(&g_hilbert_counters[1], 1);
+        }
+        
+        newIndices[destIdx] = bodyIdx;
+    }
+
     class BodySorter
     {
     public:
@@ -185,7 +263,6 @@ namespace sfc
 
         uint64_t calculateSFCKey(const Vector &pos, const Vector &minBound, const Vector &maxBound)
         {
-
             double normalizedX = (pos.x - minBound.x) / (maxBound.x - minBound.x);
             double normalizedY = (pos.y - minBound.y) / (maxBound.y - minBound.y);
             double normalizedZ = (pos.z - minBound.z) / (maxBound.z - minBound.z);
@@ -204,13 +281,13 @@ namespace sfc
             }
             else
             {
-                return hilbertEncode(x, y, z);
+                // Para mantener compatibilidad con API, pero no se usa en el nuevo algoritmo
+                return 0;
             }
         }
 
         uint64_t mortonEncode(uint32_t x, uint32_t y, uint32_t z)
         {
-
             x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
             x = (x | (x << 8)) & 0x00FF00FF00FF00FF;
             x = (x | (x << 4)) & 0x0F0F0F0F0F0F0F0F;
@@ -232,124 +309,43 @@ namespace sfc
             return x | (y << 1) | (z << 2);
         }
 
-        uint64_t hilbertEncode(uint32_t x, uint32_t y, uint32_t z)
-        {
-
-            x &= 0xFFFF;
-            y &= 0xFFFF;
-            z &= 0xFFFF;
-
-            uint64_t result = 0;
-            uint8_t state = 0;
-
-            static const uint8_t hilbertMap[8][8] = {
-                {0, 1, 3, 2, 7, 6, 4, 5},
-                {4, 5, 7, 6, 0, 1, 3, 2},
-                {6, 7, 5, 4, 2, 3, 1, 0},
-                {2, 3, 1, 0, 6, 7, 5, 4},
-                {0, 7, 1, 6, 3, 4, 2, 5},
-                {6, 1, 7, 0, 5, 2, 4, 3},
-                {2, 5, 3, 4, 1, 6, 0, 7},
-                {4, 3, 5, 2, 7, 0, 6, 1}};
-
-            static const uint8_t nextState[8][8] = {
-                {0, 1, 3, 2, 7, 6, 4, 5},
-                {1, 0, 2, 3, 4, 5, 7, 6},
-                {2, 3, 1, 0, 5, 4, 6, 7},
-                {3, 2, 0, 1, 6, 7, 5, 4},
-                {4, 5, 7, 6, 0, 1, 3, 2},
-                {5, 4, 6, 7, 1, 0, 2, 3},
-                {6, 7, 5, 4, 2, 3, 1, 0},
-                {7, 6, 4, 5, 3, 2, 0, 1}};
-
-            for (int i = 15; i >= 0; i--)
-            {
-                uint8_t octant = 0;
-                if (x & (1 << i))
-                    octant |= 1;
-                if (y & (1 << i))
-                    octant |= 2;
-                if (z & (1 << i))
-                    octant |= 4;
-
-                uint8_t position = hilbertMap[state][octant];
-                result = (result << 3) | position;
-                state = nextState[state][octant];
-            }
-
-            return result;
-        }
-
-        // int *sortBodies(Body *d_bodies, const Vector &minBound, const Vector &maxBound)
-        // {
-
-        //     int blockSize = 256;
-        //     int gridSize = (nBodies + blockSize - 1) / blockSize;
-
-        //     extractPositionsKernel<<<gridSize, blockSize, 0, stream1>>>(d_bodies, d_positions, nBodies);
-
-        //     calculateSFCKeysKernel<<<gridSize, blockSize, 0, stream1>>>(
-        //         d_positions, d_keys, nBodies, minBound, maxBound, curveType == CurveType::HILBERT);
-
-        //     thrust::counting_iterator<int> first(0);
-        //     thrust::copy(first, first + nBodies, thrust::device_pointer_cast(d_orderedIndices));
-
-        //     void *d_temp_storage = NULL;
-        //     size_t temp_storage_bytes = 0;
-
-        //     cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes,
-        //                                     d_keys, d_keys,
-        //                                     d_orderedIndices, d_orderedIndices,
-        //                                     nBodies);
-
-        //     cudaMalloc(&d_temp_storage, temp_storage_bytes);
-
-        //     cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes,
-        //                                     d_keys, d_keys,
-        //                                     d_orderedIndices, d_orderedIndices,
-        //                                     nBodies);
-
-        //     cudaFree(d_temp_storage);
-
-        //     return d_orderedIndices;
-        // }
-
         int *sortBodies(Body *d_bodies, const Vector &minBound, const Vector &maxBound)
         {
             int blockSize = 256;
             int gridSize = (nBodies + blockSize - 1) / blockSize;
 
-            // Usar el kernel combinado en lugar de los dos kernels separados
-            extractPositionsAndCalculateKeysKernel<<<gridSize, blockSize, 0, stream1>>>(
-                d_bodies, d_keys, nBodies, minBound, maxBound, curveType == CurveType::HILBERT);
+            if (curveType == CurveType::MORTON) {
+                extractPositionsAndCalculateKeysKernel<<<gridSize, blockSize, 0, stream1>>>(
+                    d_bodies, d_keys, nBodies, minBound, maxBound, false);
 
-            // Inicializar índices secuenciales
-            thrust::counting_iterator<int> first(0);
-            thrust::copy(first, first + nBodies, thrust::device_pointer_cast(d_orderedIndices));
+                thrust::counting_iterator<int> first(0);
+                thrust::copy(first, first + nBodies, thrust::device_pointer_cast(d_orderedIndices));
 
-            // Verificar si ya tenemos memoria temporal asignada
-            if (!d_temp_storage_initialized)
-            {
-                void *d_temp_storage = NULL;
-                size_t temp_storage_bytes = 0;
+                if (!d_temp_storage_initialized)
+                {
+                    void *d_temp_storage = NULL;
+                    size_t temp_storage_bytes = 0;
 
-                cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes,
+                    cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes,
                                                 d_keys, d_keys,
                                                 d_orderedIndices, d_orderedIndices,
                                                 nBodies);
 
-                cudaMalloc(&d_temp_storage, temp_storage_bytes);
-                d_temp_storage_size = temp_storage_bytes;
-                d_temp_storage_initialized = true;
-            }
+                    cudaMalloc(&d_temp_storage, temp_storage_bytes);
+                    d_temp_storage_size = temp_storage_bytes;
+                    d_temp_storage_initialized = true;
+                }
 
-            // Realizar el ordenamiento con la memoria ya asignada
-            cub::DeviceRadixSort::SortPairs(d_temp_storage, d_temp_storage_size,
+                cub::DeviceRadixSort::SortPairs(d_temp_storage, d_temp_storage_size,
                                             d_keys, d_keys,
                                             d_orderedIndices, d_orderedIndices,
                                             nBodies);
 
-            return d_orderedIndices;
+                return d_orderedIndices;
+            } 
+            else {
+                return sortBodiesFastHilbert(d_bodies, minBound, maxBound);
+            }
         }
 
     private:
@@ -366,6 +362,75 @@ namespace sfc
         Vector *h_positions = nullptr;
         cudaStream_t stream;
         cudaStream_t stream1, stream2;
+
+        int* sortBodiesFastHilbert(Body* d_bodies, const Vector &minBound, const Vector &maxBound)
+        {
+            thrust::counting_iterator<int> first(0);
+            thrust::copy(first, first + nBodies, thrust::device_pointer_cast(d_orderedIndices));
+            
+            int* d_tempIndices;
+            cudaMalloc(&d_tempIndices, nBodies * sizeof(int));
+            
+            int maxBits = 30;
+            
+            hilbertSortRecursive(d_bodies, d_orderedIndices, d_tempIndices, 0, nBodies - 1, 
+                                maxBits - 1, 0, false, minBound, maxBound);
+            
+            cudaFree(d_tempIndices);
+            return d_orderedIndices;
+        }
+
+        void hilbertSortRecursive(Body* d_bodies, int* d_indices, int* d_tempIndices,
+                                int start, int end, int bitPos, int axis, bool invertDir,
+                                const Vector &minBound, const Vector &maxBound)
+        {
+            if (start >= end || bitPos < 0) return;
+            
+            int numElements = end - start + 1;
+            
+            int h_leftCount = 0;
+            int *d_leftCount;
+            cudaMalloc(&d_leftCount, sizeof(int));
+            cudaMemset(d_leftCount, 0, sizeof(int));
+            
+            int blockSize = 256;
+            int gridSize = (numElements + blockSize - 1) / blockSize;
+            
+            fastHilbertPartitionKernel<<<gridSize, blockSize, blockSize * sizeof(int), stream1>>>(
+                d_bodies, d_indices + start, numElements, axis, bitPos, invertDir, d_leftCount);
+            
+            cudaMemcpy(&h_leftCount, d_leftCount, sizeof(int), cudaMemcpyDeviceToHost);
+            cudaFree(d_leftCount);
+            
+            if (h_leftCount == 0 || h_leftCount == numElements) {
+                int nextAxis = (axis + 1) % 3;
+                hilbertSortRecursive(d_bodies, d_indices, d_tempIndices, 
+                                   start, end, bitPos - 1, nextAxis, !invertDir,
+                                   minBound, maxBound);
+                return;
+            }
+            
+            int h_counters[2] = {0, 0};
+            cudaMemcpyToSymbol(g_hilbert_counters, h_counters, 2 * sizeof(int));
+            
+            fastHilbertReorderKernel<<<gridSize, blockSize, 0, stream1>>>(
+                d_bodies, d_indices + start, d_tempIndices, numElements, 
+                axis, bitPos, invertDir, h_leftCount);
+            
+            cudaMemcpy(d_indices + start, d_tempIndices, numElements * sizeof(int), cudaMemcpyDeviceToDevice);
+            
+            int mid = start + h_leftCount - 1;
+            
+            int nextAxisLeft = (axis + 1) % 3;
+            hilbertSortRecursive(d_bodies, d_indices, d_tempIndices,
+                               start, mid, bitPos - 1, nextAxisLeft, invertDir,
+                               minBound, maxBound);
+            
+            int nextAxisRight = (axis + 1) % 3;
+            hilbertSortRecursive(d_bodies, d_indices, d_tempIndices,
+                               mid + 1, end, bitPos - 1, nextAxisRight, !invertDir,
+                               minBound, maxBound);
+        }
     };
 }
 
@@ -1393,306 +1458,6 @@ __global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_pot
     }
 }
 
-__global__ void extractPositionsKernel(Body *bodies, Vector *positions, int n)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n)
-    {
-        positions[idx] = bodies[idx].position;
-    }
-}
-
-__global__ void calculateSFCKeysKernel(Vector *positions, uint64_t *keys, int nBodies,
-                                       Vector minBound, Vector maxBound, bool isHilbert)
-{
-
-    __shared__ uint8_t hilbertMap[8][8];
-    __shared__ uint8_t nextState[8][8];
-
-    if (threadIdx.x == 0)
-    {
-
-        hilbertMap[0][0] = 0;
-        hilbertMap[0][1] = 1;
-        hilbertMap[0][2] = 3;
-        hilbertMap[0][3] = 2;
-        hilbertMap[0][4] = 7;
-        hilbertMap[0][5] = 6;
-        hilbertMap[0][6] = 4;
-        hilbertMap[0][7] = 5;
-
-        hilbertMap[1][0] = 4;
-        hilbertMap[1][1] = 5;
-        hilbertMap[1][2] = 7;
-        hilbertMap[1][3] = 6;
-        hilbertMap[1][4] = 0;
-        hilbertMap[1][5] = 1;
-        hilbertMap[1][6] = 3;
-        hilbertMap[1][7] = 2;
-
-        hilbertMap[2][0] = 6;
-        hilbertMap[2][1] = 7;
-        hilbertMap[2][2] = 5;
-        hilbertMap[2][3] = 4;
-        hilbertMap[2][4] = 2;
-        hilbertMap[2][5] = 3;
-        hilbertMap[2][6] = 1;
-        hilbertMap[2][7] = 0;
-
-        hilbertMap[3][0] = 2;
-        hilbertMap[3][1] = 3;
-        hilbertMap[3][2] = 1;
-        hilbertMap[3][3] = 0;
-        hilbertMap[3][4] = 6;
-        hilbertMap[3][5] = 7;
-        hilbertMap[3][6] = 5;
-        hilbertMap[3][7] = 4;
-
-        hilbertMap[4][0] = 0;
-        hilbertMap[4][1] = 7;
-        hilbertMap[4][2] = 1;
-        hilbertMap[4][3] = 6;
-        hilbertMap[4][4] = 3;
-        hilbertMap[4][5] = 4;
-        hilbertMap[4][6] = 2;
-        hilbertMap[4][7] = 5;
-
-        hilbertMap[5][0] = 6;
-        hilbertMap[5][1] = 1;
-        hilbertMap[5][2] = 7;
-        hilbertMap[5][3] = 0;
-        hilbertMap[5][4] = 5;
-        hilbertMap[5][5] = 2;
-        hilbertMap[5][6] = 4;
-        hilbertMap[5][7] = 3;
-
-        hilbertMap[6][0] = 2;
-        hilbertMap[6][1] = 5;
-        hilbertMap[6][2] = 3;
-        hilbertMap[6][3] = 4;
-        hilbertMap[6][4] = 1;
-        hilbertMap[6][5] = 6;
-        hilbertMap[6][6] = 0;
-        hilbertMap[6][7] = 7;
-
-        hilbertMap[7][0] = 4;
-        hilbertMap[7][1] = 3;
-        hilbertMap[7][2] = 5;
-        hilbertMap[7][3] = 2;
-        hilbertMap[7][4] = 7;
-        hilbertMap[7][5] = 0;
-        hilbertMap[7][6] = 6;
-        hilbertMap[7][7] = 1;
-
-        nextState[0][0] = 0;
-        nextState[0][1] = 1;
-        nextState[0][2] = 3;
-        nextState[0][3] = 2;
-        nextState[0][4] = 7;
-        nextState[0][5] = 6;
-        nextState[0][6] = 4;
-        nextState[0][7] = 5;
-
-        nextState[1][0] = 1;
-        nextState[1][1] = 0;
-        nextState[1][2] = 2;
-        nextState[1][3] = 3;
-        nextState[1][4] = 4;
-        nextState[1][5] = 5;
-        nextState[1][6] = 7;
-        nextState[1][7] = 6;
-
-        nextState[2][0] = 2;
-        nextState[2][1] = 3;
-        nextState[2][2] = 1;
-        nextState[2][3] = 0;
-        nextState[2][4] = 5;
-        nextState[2][5] = 4;
-        nextState[2][6] = 6;
-        nextState[2][7] = 7;
-
-        nextState[3][0] = 3;
-        nextState[3][1] = 2;
-        nextState[3][2] = 0;
-        nextState[3][3] = 1;
-        nextState[3][4] = 6;
-        nextState[3][5] = 7;
-        nextState[3][6] = 5;
-        nextState[3][7] = 4;
-
-        nextState[4][0] = 4;
-        nextState[4][1] = 5;
-        nextState[4][2] = 7;
-        nextState[4][3] = 6;
-        nextState[4][4] = 0;
-        nextState[4][5] = 1;
-        nextState[4][6] = 3;
-        nextState[4][7] = 2;
-
-        nextState[5][0] = 5;
-        nextState[5][1] = 4;
-        nextState[5][2] = 6;
-        nextState[5][3] = 7;
-        nextState[5][4] = 1;
-        nextState[5][5] = 0;
-        nextState[5][6] = 2;
-        nextState[5][7] = 3;
-
-        nextState[6][0] = 6;
-        nextState[6][1] = 7;
-        nextState[6][2] = 5;
-        nextState[6][3] = 4;
-        nextState[6][4] = 2;
-        nextState[6][5] = 3;
-        nextState[6][6] = 1;
-        nextState[6][7] = 0;
-
-        nextState[7][0] = 7;
-        nextState[7][1] = 6;
-        nextState[7][2] = 4;
-        nextState[7][3] = 5;
-        nextState[7][4] = 3;
-        nextState[7][5] = 2;
-        nextState[7][6] = 0;
-        nextState[7][7] = 1;
-    }
-
-    __syncthreads();
-
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= nBodies)
-        return;
-
-    Vector pos = positions[i];
-
-    double invRangeX = 1.0 / (maxBound.x - minBound.x);
-    double invRangeY = 1.0 / (maxBound.y - minBound.y);
-    double invRangeZ = 1.0 / (maxBound.z - minBound.z);
-
-    double normalizedX = (pos.x - minBound.x) * invRangeX;
-    double normalizedY = (pos.y - minBound.y) * invRangeY;
-    double normalizedZ = (pos.z - minBound.z) * invRangeZ;
-
-    normalizedX = max(0.0, min(0.999999, normalizedX));
-    normalizedY = max(0.0, min(0.999999, normalizedY));
-    normalizedZ = max(0.0, min(0.999999, normalizedZ));
-
-    const uint32_t MAX_COORD = 0xFFFF;
-
-    uint32_t x = static_cast<uint32_t>(normalizedX * MAX_COORD);
-    uint32_t y = static_cast<uint32_t>(normalizedY * MAX_COORD);
-    uint32_t z = static_cast<uint32_t>(normalizedZ * MAX_COORD);
-
-    uint64_t key = 0;
-
-    if (!isHilbert)
-    {
-
-        uint32_t xx = x;
-        uint32_t yy = y;
-        uint32_t zz = z;
-
-        xx = (xx | (xx << 8)) & 0x00FF00FF;
-        xx = (xx | (xx << 4)) & 0x0F0F0F0F;
-        xx = (xx | (xx << 2)) & 0x33333333;
-        xx = (xx | (xx << 1)) & 0x55555555;
-
-        yy = (yy | (yy << 8)) & 0x00FF00FF;
-        yy = (yy | (yy << 4)) & 0x0F0F0F0F;
-        yy = (yy | (yy << 2)) & 0x33333333;
-        yy = (yy | (yy << 1)) & 0x55555555;
-
-        zz = (zz | (zz << 8)) & 0x00FF00FF;
-        zz = (zz | (zz << 4)) & 0x0F0F0F0F;
-        zz = (zz | (zz << 2)) & 0x33333333;
-        zz = (zz | (zz << 1)) & 0x55555555;
-
-        key = xx | (yy << 1) | (zz << 2);
-    }
-
-    else
-    {
-        uint8_t state = 0;
-
-        {
-            uint8_t octant = 0;
-            if (x & 0x8000)
-                octant |= 1;
-            if (y & 0x8000)
-                octant |= 2;
-            if (z & 0x8000)
-                octant |= 4;
-
-            uint8_t position = hilbertMap[state][octant];
-            key = (key << 3) | position;
-            state = nextState[state][octant];
-        }
-
-        {
-            uint8_t octant = 0;
-            if (x & 0x4000)
-                octant |= 1;
-            if (y & 0x4000)
-                octant |= 2;
-            if (z & 0x4000)
-                octant |= 4;
-
-            uint8_t position = hilbertMap[state][octant];
-            key = (key << 3) | position;
-            state = nextState[state][octant];
-        }
-
-        {
-            uint8_t octant = 0;
-            if (x & 0x2000)
-                octant |= 1;
-            if (y & 0x2000)
-                octant |= 2;
-            if (z & 0x2000)
-                octant |= 4;
-
-            uint8_t position = hilbertMap[state][octant];
-            key = (key << 3) | position;
-            state = nextState[state][octant];
-        }
-
-        {
-            uint8_t octant = 0;
-            if (x & 0x1000)
-                octant |= 1;
-            if (y & 0x1000)
-                octant |= 2;
-            if (z & 0x1000)
-                octant |= 4;
-
-            uint8_t position = hilbertMap[state][octant];
-            key = (key << 3) | position;
-            state = nextState[state][octant];
-        }
-
-        for (int j = 0; j < 3; j++)
-        {
-            for (int i = 3; i >= 0; i--)
-            {
-                uint8_t octant = 0;
-                uint32_t mask = 1 << (i + j * 4);
-                if (x & mask)
-                    octant |= 1;
-                if (y & mask)
-                    octant |= 2;
-                if (z & mask)
-                    octant |= 4;
-
-                uint8_t position = hilbertMap[state][octant];
-                key = (key << 3) | position;
-                state = nextState[state][octant];
-            }
-        }
-    }
-
-    keys[i] = key;
-}
-
 __constant__ uint8_t d_hilbertMap[8][8] = {
     {0, 1, 3, 2, 7, 6, 4, 5},
     {4, 5, 7, 6, 0, 1, 3, 2},
@@ -1783,10 +1548,6 @@ __global__ void extractPositionsAndCalculateKeysKernel(
         // Codificación de curva Hilbert usando tablas en memoria constante
         uint8_t state = 0;
         key = 0;
-
-        // Procesamiento por bits para los 16 bits más significativos
-        // para mantener la misma resolución que en tu implementación original
-        // pero optimizando con tablas precalculadas en memoria constante
 
         // Comienza con el bit más significativo
         {
