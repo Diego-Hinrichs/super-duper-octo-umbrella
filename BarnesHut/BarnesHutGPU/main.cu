@@ -18,133 +18,170 @@
 #include <thrust/device_vector.h>
 #include <thrust/sequence.h>
 #include "../../argparse.hpp"
+#include "../../morton/morton.h"
 
+// Include the kernel headers
+#include "../../kernels/constants.cuh"
+#include "../../kernels/types.cuh"
+#include "../../kernels/reset_kernel.cu"
+#include "../../kernels/octree_kernel.cu"
+#include "../../kernels/force_kernel.cu"
 
-struct Vector
+// Implementación de atomicAdd para double si no está disponible
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
+__device__ double atomicAdd(double *address, double val)
 {
-    double x;
-    double y;
-    double z;
+    unsigned long long int *address_as_ull = (unsigned long long int *)address;
+    unsigned long long int old = *address_as_ull, assumed;
 
-    __host__ __device__ Vector() : x(0.0), y(0.0), z(0.0) {}
-
-    __host__ __device__ Vector(double x_, double y_, double z_) : x(x_), y(y_), z(z_) {}
-
-    __host__ __device__ Vector operator+(const Vector &other) const
+    do
     {
-        return Vector(x + other.x, y + other.y, z + other.z);
-    }
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                      __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
 
-    __host__ __device__ Vector operator-(const Vector &other) const
-    {
-        return Vector(x - other.x, y - other.y, z - other.z);
-    }
+    return __longlong_as_double(old);
+}
+#endif
 
-    __host__ __device__ Vector operator*(double scalar) const
-    {
-        return Vector(x * scalar, y * scalar, z * scalar);
-    }
+__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy)
+{
+    extern __shared__ double sharedEnergy[];
+    double *sharedPotential = sharedEnergy;
+    double *sharedKinetic = &sharedEnergy[blockDim.x];
 
-    __host__ __device__ double dot(const Vector &other) const
-    {
-        return x * other.x + y * other.y + z * other.z;
-    }
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int tx = threadIdx.x;
 
-    __host__ __device__ double lengthSquared() const
-    {
-        return x * x + y * y + z * z;
-    }
+    sharedPotential[tx] = 0.0;
+    sharedKinetic[tx] = 0.0;
 
-    __host__ __device__ double length() const
+    if (i < nBodies)
     {
-        return sqrt(lengthSquared());
-    }
-
-    __host__ __device__ Vector normalize() const
-    {
-        double len = length();
-        if (len > 0.0)
+        if (bodies[i].isDynamic)
         {
-            return Vector(x / len, y / len, z / len);
+            double vSquared = bodies[i].velocity.lengthSquared();
+            sharedKinetic[tx] = 0.5 * bodies[i].mass * vSquared;
         }
-        return *this;
+
+        for (int j = i + 1; j < nBodies; j++)
+        {
+            Vector r = bodies[j].position - bodies[i].position;
+
+            double distSqr = r.lengthSquared() + (E * E);
+            double dist = sqrt(distSqr);
+
+            if (dist < COLLISION_TH)
+                continue;
+
+            sharedPotential[tx] -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
+        }
     }
 
-    __host__ __device__ static double distance(const Vector &a, const Vector &b)
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1)
     {
-        return (a - b).length();
+        if (tx < s)
+        {
+            sharedPotential[tx] += sharedPotential[tx + s];
+            sharedKinetic[tx] += sharedKinetic[tx + s];
+        }
+        __syncthreads();
     }
 
-    __host__ __device__ static double distanceSquared(const Vector &a, const Vector &b)
+    if (tx == 0)
     {
-        return (a - b).lengthSquared();
+        atomicAdd(d_potentialEnergy, sharedPotential[0]);
+        atomicAdd(d_kineticEnergy, sharedKinetic[0]);
     }
-};
-
-struct Body
-{
-    bool isDynamic;
-    double mass;
-    double radius;
-    Vector position;
-    Vector velocity;
-    Vector acceleration;
-
-    __host__ __device__ Body() : isDynamic(true),
-                                 mass(0.0),
-                                 radius(0.0),
-                                 position(),
-                                 velocity(),
-                                 acceleration() {}
-};
-
-struct Node
-{
-    bool isLeaf;
-    int firstChildIndex;
-    int bodyIndex;
-    int bodyCount;
-    Vector position;
-    double mass;
-    double radius;
-    Vector min;
-    Vector max;
-
-    __host__ __device__ Node()
-        : isLeaf(true),
-          firstChildIndex(-1),
-          bodyIndex(-1),
-          bodyCount(0),
-          position(),
-          mass(0.0),
-          radius(0.0),
-          min(),
-          max() {}
-};
-
-__global__ void extractPositionsAndCalculateKeysKernel(Body *bodies, uint64_t *keys, int nBodies, Vector minBound, Vector maxBound, bool isHilbert);
-
-struct SimulationMetrics
-{
-    float resetTimeMs;
-    float bboxTimeMs;
-    float buildTimeMs;
-    float forceTimeMs;
-    float reorderTimeMs;
-    float totalTimeMs;
-    float energyCalculationTimeMs;
-
-    SimulationMetrics() : resetTimeMs(0.0f),
-                          bboxTimeMs(0.0f),
-                          buildTimeMs(0.0f),
-                          forceTimeMs(0.0f),
-                          reorderTimeMs(0.0f),
-                          totalTimeMs(0.0f),
-                          energyCalculationTimeMs(0.0f) {}
-};
+}
 
 namespace sfc
 {
+    __global__ void extractPositionsAndCalculateKeysKernel(
+        Body *bodies,
+        uint64_t *keys,
+        int nBodies,
+        Vector minBound,
+        Vector maxBound,
+        bool isHilbert)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if (i >= nBodies)
+            return;
+
+        // Extraer posición directamente del cuerpo
+        Vector pos = bodies[i].position;
+
+        // Precalcular los rangos inversos para evitar divisiones
+        double invRangeX = 1.0 / (maxBound.x - minBound.x);
+        double invRangeY = 1.0 / (maxBound.y - minBound.y);
+        double invRangeZ = 1.0 / (maxBound.z - minBound.z);
+
+        // Normalizar las coordenadas al rango [0,1)
+        double normalizedX = (pos.x - minBound.x) * invRangeX;
+        double normalizedY = (pos.y - minBound.y) * invRangeY;
+        double normalizedZ = (pos.z - minBound.z) * invRangeZ;
+
+        // Asegurar que están dentro del rango para evitar desbordamientos
+        normalizedX = fmax(0.0, fmin(0.999999, normalizedX));
+        normalizedY = fmax(0.0, fmin(0.999999, normalizedY));
+        normalizedZ = fmax(0.0, fmin(0.999999, normalizedZ));
+
+        // Convertir a enteros para el cálculo de claves
+        // Usar 20 bits para mayor precisión (1M valores)
+        const uint32_t MAX_COORD = (1 << 20) - 1;
+
+        uint32_t x = static_cast<uint32_t>(normalizedX * MAX_COORD);
+        uint32_t y = static_cast<uint32_t>(normalizedY * MAX_COORD);
+        uint32_t z = static_cast<uint32_t>(normalizedZ * MAX_COORD);
+
+        uint64_t key = 0;
+
+        if (!isHilbert)
+        {
+            // Define magic bit masks for 64-bit Morton encoding
+            const uint64_t masks64[6] = { 
+                0x1fffff, 
+                0x1f00000000ffff, 
+                0x1f0000ff0000ff, 
+                0x100f00f00f00f00f, 
+                0x10c30c30c30c30c3, 
+                0x1249249249249249 
+            };
+            
+            // Magic bits implementation for Morton encoding
+            // Split the bits for each coordinate using magic bits method
+            uint64_t morton_x = ((uint64_t)x) & masks64[0];
+            morton_x = (morton_x | (morton_x << 32)) & masks64[1];
+            morton_x = (morton_x | (morton_x << 16)) & masks64[2];
+            morton_x = (morton_x | (morton_x << 8))  & masks64[3];
+            morton_x = (morton_x | (morton_x << 4))  & masks64[4];
+            morton_x = (morton_x | (morton_x << 2))  & masks64[5];
+            
+            uint64_t morton_y = ((uint64_t)y) & masks64[0];
+            morton_y = (morton_y | (morton_y << 32)) & masks64[1];
+            morton_y = (morton_y | (morton_y << 16)) & masks64[2];
+            morton_y = (morton_y | (morton_y << 8))  & masks64[3];
+            morton_y = (morton_y | (morton_y << 4))  & masks64[4];
+            morton_y = (morton_y | (morton_y << 2))  & masks64[5];
+            
+            uint64_t morton_z = ((uint64_t)z) & masks64[0];
+            morton_z = (morton_z | (morton_z << 32)) & masks64[1];
+            morton_z = (morton_z | (morton_z << 16)) & masks64[2];
+            morton_z = (morton_z | (morton_z << 8))  & masks64[3];
+            morton_z = (morton_z | (morton_z << 4))  & masks64[4];
+            morton_z = (morton_z | (morton_z << 2))  & masks64[5];
+            
+            // Combine the encoded coordinates
+            key = morton_x | (morton_y << 1) | (morton_z << 2);
+        }
+
+        keys[i] = key;
+    }
+
     enum class CurveType
     {
         MORTON,
@@ -290,25 +327,7 @@ namespace sfc
 
         uint64_t mortonEncode(uint32_t x, uint32_t y, uint32_t z)
         {
-            x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
-            x = (x | (x << 8)) & 0x00FF00FF00FF00FF;
-            x = (x | (x << 4)) & 0x0F0F0F0F0F0F0F0F;
-            x = (x | (x << 2)) & 0x3333333333333333;
-            x = (x | (x << 1)) & 0x5555555555555555;
-
-            y = (y | (y << 16)) & 0x0000FFFF0000FFFF;
-            y = (y | (y << 8)) & 0x00FF00FF00FF00FF;
-            y = (y | (y << 4)) & 0x0F0F0F0F0F0F0F0F;
-            y = (y | (y << 2)) & 0x3333333333333333;
-            y = (y | (y << 1)) & 0x5555555555555555;
-
-            z = (z | (z << 16)) & 0x0000FFFF0000FFFF;
-            z = (z | (z << 8)) & 0x00FF00FF00FF00FF;
-            z = (z | (z << 4)) & 0x0F0F0F0F0F0F0F0F;
-            z = (z | (z << 2)) & 0x3333333333333333;
-            z = (z | (z << 1)) & 0x5555555555555555;
-
-            return x | (y << 1) | (z << 2);
+            return libmorton::morton3D_64_encode(x, y, z);
         }
 
         int *sortBodies(Body *d_bodies, const Vector &minBound, const Vector &maxBound)
@@ -450,29 +469,10 @@ enum class MassDistribution
     NORMAL
 };
 
-constexpr double GRAVITY = 6.67430e-11;
-constexpr double SOFTENING_FACTOR = 0.5;
-constexpr double TIME_STEP = 25000.0;
-constexpr double COLLISION_THRESHOLD = 1.0e10;
-
-constexpr double MAX_DIST = 5.0e11;
-constexpr double MIN_DIST = 2.0e10;
-constexpr double EARTH_MASS = 5.974e24;
-constexpr double EARTH_DIA = 12756.0;
-constexpr double SUN_MASS = 1.989e30;
-constexpr double SUN_DIA = 1.3927e6;
-constexpr double CENTERX = 0;
-constexpr double CENTERY = 0;
-constexpr double CENTERZ = 0;
-
+// Utilizamos las constantes de constants.cuh
+// Definir algunas constantes que no están en constants.cuh
 constexpr int DEFAULT_BLOCK_SIZE = 256;
-constexpr int MAX_NODES = 1000000;
-constexpr int N_LEAF = 8;
 constexpr double DEFAULT_THETA = 0.5;
-
-#define E SOFTENING_FACTOR
-#define DT TIME_STEP
-#define COLLISION_TH COLLISION_THRESHOLD
 
 int g_blockSize = DEFAULT_BLOCK_SIZE;
 double g_theta = DEFAULT_THETA;
@@ -482,37 +482,6 @@ bool dirExists(const std::string &dirName)
     struct stat info;
     return stat(dirName.c_str(), &info) == 0 && (info.st_mode & S_IFDIR);
 }
-
-bool createDir(const std::string &dirName)
-{
-#ifdef _WIN32
-    int status = mkdir(dirName.c_str());
-#else
-    int status = mkdir(dirName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-#endif
-    return status == 0;
-}
-
-bool ensureDirExists(const std::string &dirPath)
-{
-    if (dirExists(dirPath))
-    {
-        return true;
-    }
-
-    std::cout << "Creando directorio: " << dirPath << std::endl;
-    if (createDir(dirPath))
-    {
-        return true;
-    }
-    else
-    {
-        std::cerr << "Error: No se pudo crear el directorio " << dirPath << std::endl;
-        return false;
-    }
-}
-
-
 
 inline void checkCudaError(cudaError_t err, const char *const func, const char *const file, int line)
 {
@@ -544,23 +513,6 @@ inline void checkLastCudaError(const char *const file, int line)
         kernel<<<gridSize, blockSize, sharedMem, stream>>>(__VA_ARGS__);      \
         CHECK_LAST_CUDA_ERROR();                                              \
     } while (0)
-
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
-__device__ double atomicAdd(double *address, double val)
-{
-    unsigned long long int *address_as_ull = (unsigned long long int *)address;
-    unsigned long long int old = *address_as_ull, assumed;
-
-    do
-    {
-        assumed = old;
-        old = atomicCAS(address_as_ull, assumed,
-                        __double_as_longlong(val + __longlong_as_double(assumed)));
-    } while (assumed != old);
-
-    return __longlong_as_double(old);
-}
-#endif
 
 class CudaTimer
 {
@@ -954,660 +906,6 @@ public:
     }
 };
 
-__global__ void ResetKernel(Node *nodes, int *mutex, int nNodes, int nBodies)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < nNodes)
-    {
-
-        nodes[i].isLeaf = (i < nBodies);
-        nodes[i].firstChildIndex = -1;
-        nodes[i].bodyIndex = (i < nBodies) ? i : -1;
-        nodes[i].bodyCount = (i < nBodies) ? 1 : 0;
-        nodes[i].position = Vector(0, 0, 0);
-        nodes[i].mass = 0.0;
-        nodes[i].radius = 0.0;
-        nodes[i].min = Vector(0, 0, 0);
-        nodes[i].max = Vector(0, 0, 0);
-
-        if (i < nNodes)
-            mutex[i] = 0;
-    }
-}
-
-__global__ void ComputeBoundingBoxKernel(Node *nodes, Body *bodies, int *orderedIndices, bool useSFC, int *mutex, int nBodies)
-{
-
-    extern __shared__ double sharedMem[];
-    double *minX = &sharedMem[0];
-    double *minY = &sharedMem[blockDim.x];
-    double *minZ = &sharedMem[2 * blockDim.x];
-    double *maxX = &sharedMem[3 * blockDim.x];
-    double *maxY = &sharedMem[4 * blockDim.x];
-    double *maxZ = &sharedMem[5 * blockDim.x];
-
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int tx = threadIdx.x;
-
-    int realBodyIndex = (useSFC && orderedIndices != nullptr && i < nBodies) ? orderedIndices[i] : i;
-
-    minX[tx] = (i < nBodies) ? bodies[realBodyIndex].position.x : DBL_MAX;
-    minY[tx] = (i < nBodies) ? bodies[realBodyIndex].position.y : DBL_MAX;
-    minZ[tx] = (i < nBodies) ? bodies[realBodyIndex].position.z : DBL_MAX;
-    maxX[tx] = (i < nBodies) ? bodies[realBodyIndex].position.x : -DBL_MAX;
-    maxY[tx] = (i < nBodies) ? bodies[realBodyIndex].position.y : -DBL_MAX;
-    maxZ[tx] = (i < nBodies) ? bodies[realBodyIndex].position.z : -DBL_MAX;
-
-    __syncthreads();
-
-    for (int s = blockDim.x / 2; s > 0; s >>= 1)
-    {
-        if (tx < s)
-        {
-            minX[tx] = min(minX[tx], minX[tx + s]);
-            minY[tx] = min(minY[tx], minY[tx + s]);
-            minZ[tx] = min(minZ[tx], minZ[tx + s]);
-            maxX[tx] = max(maxX[tx], maxX[tx + s]);
-            maxY[tx] = max(maxY[tx], maxY[tx + s]);
-            maxZ[tx] = max(maxZ[tx], maxZ[tx + s]);
-        }
-        __syncthreads();
-    }
-
-    if (tx == 0)
-    {
-
-        nodes[0].isLeaf = false;
-        nodes[0].bodyCount = nBodies;
-        nodes[0].min = Vector(minX[0], minY[0], minZ[0]);
-        nodes[0].max = Vector(maxX[0], maxY[0], maxZ[0]);
-
-        Vector padding = (nodes[0].max - nodes[0].min) * 0.01;
-        nodes[0].min = nodes[0].min - padding;
-        nodes[0].max = nodes[0].max + padding;
-
-        Vector dimensions = nodes[0].max - nodes[0].min;
-        nodes[0].radius = max(max(dimensions.x, dimensions.y), dimensions.z) * 0.5;
-
-        nodes[0].position = (nodes[0].min + nodes[0].max) * 0.5;
-    }
-}
-
-__device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, int nNodes, int leafLimit)
-{
-    // Verificación más estricta de índices
-    if (nodeIdx < 0 || nodeIdx >= nNodes - 1) {
-        return false;
-    }
-    
-    // Alineación explícita de acceso
-    nodeIdx = min(nodeIdx, nNodes - 2);
-    
-    Node &node = nodes[nodeIdx];
-
-    if (node.isLeaf && node.bodyCount == 0)
-    {
-        node.bodyIndex = bodyIdx;
-        node.bodyCount = 1;
-        node.position = bodies[bodyIdx].position;
-        node.mass = bodies[bodyIdx].mass;
-        return true;
-    }
-
-    if (node.isLeaf && node.bodyCount > 0)
-    {
-        if (nodeIdx >= leafLimit)
-            return false;
-            
-        node.isLeaf = false;
-        
-        // Verificar overflow antes de la operación atómica
-        int counter = nodes[nNodes - 1].bodyCount;
-        if (counter + 8 >= nNodes - 16) {
-            // Estamos cerca del límite, no permitir la expansión
-            node.isLeaf = true; // Revertir cambio
-            return false;
-        }
-        
-        int firstChildIdx = atomicAdd(&nodes[nNodes - 1].bodyCount, 8);
-
-        // Doble verificación posterior a la operación atómica
-        if (firstChildIdx < 0 || firstChildIdx + 7 >= nNodes - 16) {
-            return false;
-        }
-
-        node.firstChildIndex = firstChildIdx;
-
-        int existingBodyIdx = node.bodyIndex;
-        node.bodyIndex = -1;
-
-        Vector center = node.position;
-
-        Vector pos = bodies[existingBodyIdx].position;
-        int childIdx = ((pos.x >= center.x) ? 1 : 0) |
-                       ((pos.y >= center.y) ? 2 : 0) |
-                       ((pos.z >= center.z) ? 4 : 0);
-
-        for (int i = 0; i < 8; i++)
-        {
-            // Verificar que el índice es válido
-            if (firstChildIdx + i < 0 || firstChildIdx + i >= nNodes - 1) {
-                return false;
-            }
-            
-            Node &child = nodes[firstChildIdx + i];
-            child.isLeaf = true;
-            child.firstChildIndex = -1;
-            child.bodyIndex = -1;
-            child.bodyCount = 0;
-            child.mass = 0.0;
-
-            Vector min = node.min;
-            Vector max = node.max;
-
-            if (i & 1)
-                min.x = center.x;
-            else
-                max.x = center.x;
-            if (i & 2)
-                min.y = center.y;
-            else
-                max.y = center.y;
-            if (i & 4)
-                min.z = center.z;
-            else
-                max.z = center.z;
-
-            child.min = min;
-            child.max = max;
-            child.position = (min + max) * 0.5;
-
-            double dx = max.x - min.x;
-            double dy = max.y - min.y;
-            double dz = max.z - min.z;
-            double maxDim = dx > dy ? dx : dy;
-            maxDim = maxDim > dz ? maxDim : dz;
-            child.radius = maxDim * 0.5;
-        }
-
-        // Verificar índice del hijo antes de insertar
-        if (childIdx < 0 || childIdx >= 8 || firstChildIdx + childIdx >= nNodes - 1) {
-            return false;
-        }
-        
-        bool inserted = InsertBody(nodes, bodies, existingBodyIdx, firstChildIdx + childIdx, nNodes, leafLimit);
-        if (!inserted) {
-            return false;
-        }
-    }
-
-    Vector pos = bodies[bodyIdx].position;
-    Vector center = node.position;
-
-    int childIdx = ((pos.x >= center.x) ? 1 : 0) |
-                   ((pos.y >= center.y) ? 2 : 0) |
-                   ((pos.z >= center.z) ? 4 : 0);
-
-    // Verificación más estricta de índice
-    if (node.firstChildIndex >= 0 && childIdx >= 0 && childIdx < 8 && 
-        node.firstChildIndex + childIdx < nNodes - 1)
-    {
-        bool inserted = InsertBody(nodes, bodies, bodyIdx, node.firstChildIndex + childIdx, nNodes, leafLimit);
-        if (!inserted) {
-            return false;
-        }
-    }
-
-    double totalMass = node.mass + bodies[bodyIdx].mass;
-    Vector weightedPos = node.position * node.mass + bodies[bodyIdx].position * bodies[bodyIdx].mass;
-
-    if (totalMass > 0.0)
-    {
-        node.position = weightedPos * (1.0 / totalMass);
-        node.mass = totalMass;
-    }
-
-    node.bodyCount++;
-
-    return true;
-}
-
-__global__ void ConstructOctTreeKernel(Node *nodes, Body *bodies, Body *bodyBuffer, int *orderedIndices, bool useSFC,
-                                       int rootIdx, int nNodes, int nBodies, int leafLimit)
-{
-    extern __shared__ double sharedMem[];
-    double *totalMass = &sharedMem[0];
-    double3 *centerMass = (double3 *)(totalMass + blockDim.x);
-
-    int i = threadIdx.x;
-    __shared__ int failureDetected;
-    
-    if (i == 0) {
-        failureDetected = 0;
-    }
-    __syncthreads();
-
-    for (int bodyIdx = i; bodyIdx < nBodies && failureDetected == 0; bodyIdx += blockDim.x)
-    {
-        int realBodyIdx = (useSFC && orderedIndices != nullptr) ? orderedIndices[bodyIdx] : bodyIdx;
-
-        // Verifica índices dentro de límites seguros
-        if (realBodyIdx < 0 || realBodyIdx >= nBodies) {
-            continue;
-        }
-
-        bodyBuffer[bodyIdx] = bodies[realBodyIdx];
-
-        // Don't continue trying to insert bodies if we've failed once
-        if (!InsertBody(nodes, bodies, realBodyIdx, rootIdx, nNodes, leafLimit)) {
-            atomicExch(&failureDetected, 1);
-            // If insertion fails, mark an error in a visible way
-            if (i == 0) {
-                // Only one thread needs to report the error
-                atomicExch(&nodes[0].bodyCount, -999); // Error marker
-            }
-            // Break out of the loop to avoid further issues
-            break;
-        }
-    }
-    
-    __syncthreads();
-}
-
-__global__ void ComputeForceKernel(Node *nodes, Body *bodies, int *orderedIndices, bool useSFC,
-                                   int nNodes, int nBodies, int leafLimit, double theta)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-
-    int realBodyIdx = (useSFC && orderedIndices != nullptr && i < nBodies) ? orderedIndices[i] : i;
-
-    if (realBodyIdx >= nBodies || !bodies[realBodyIdx].isDynamic)
-        return;
-
-    __shared__ Node nodeCache[32];
-    __shared__ int cacheIndices[32];
-    __shared__ int cacheSize;
-
-    if (threadIdx.x == 0)
-    {
-        cacheSize = 0;
-
-        nodeCache[0] = nodes[0];
-        cacheIndices[0] = 0;
-        cacheSize = 1;
-    }
-    __syncthreads();
-
-    Vector acc(0.0, 0.0, 0.0);
-    Vector pos = bodies[realBodyIdx].position;
-    double bodyMass = bodies[realBodyIdx].mass;
-
-    extern __shared__ int sharedData[];
-    const int MAX_STACK_SIZE = 32;
-    int *localStack = &sharedData[threadIdx.x * MAX_STACK_SIZE];
-    int stackSize = 0;
-
-    if (stackSize < MAX_STACK_SIZE)
-    {
-        localStack[stackSize++] = 0;
-    }
-
-    double adaptiveTheta = theta;
-    if (useSFC)
-    {
-
-        int sectionSize = nBodies / 4;
-        int section = i / sectionSize;
-
-        if (section == 0 || section == 3)
-        {
-
-            adaptiveTheta = theta * 0.85;
-        }
-        else
-        {
-
-            adaptiveTheta = theta * 1.15;
-        }
-
-        adaptiveTheta = max(0.3, min(0.9, adaptiveTheta));
-    }
-
-    while (stackSize > 0)
-    {
-        int nodeIdx = localStack[--stackSize];
-
-        Node node;
-        bool foundInCache = false;
-
-#pragma unroll
-        for (int c = 0; c < 32; c++)
-        {
-            if (c < cacheSize && cacheIndices[c] == nodeIdx)
-            {
-                node = nodeCache[c];
-                foundInCache = true;
-                break;
-            }
-        }
-
-        if (!foundInCache)
-        {
-            node = nodes[nodeIdx];
-
-            if (cacheSize < 32)
-            {
-                int cacheIdx = atomicAdd(&cacheSize, 1);
-                if (cacheIdx < 32)
-                {
-                    nodeCache[cacheIdx] = node;
-                    cacheIndices[cacheIdx] = nodeIdx;
-                }
-            }
-        }
-
-        Vector nodePos = node.position;
-        Vector dir = nodePos - pos;
-        double distSqr = dir.lengthSquared();
-
-        if (distSqr < 1e-10)
-            continue;
-
-        if (!node.isLeaf)
-        {
-            double nodeSizeSqr = node.radius * node.radius * 4.0;
-
-            if (nodeSizeSqr < distSqr * adaptiveTheta * adaptiveTheta)
-            {
-
-                double dist = sqrt(distSqr);
-                double invDist3 = 1.0 / (dist * distSqr);
-                acc = acc + dir * (node.mass * invDist3);
-            }
-            else
-            {
-
-                int firstChildIdx = node.firstChildIndex;
-
-                if (useSFC)
-                {
-
-                    static const int childOrder[8] = {0, 1, 3, 2, 6, 7, 5, 4};
-
-#pragma unroll
-                    for (int c = 0; c < 8; c++)
-                    {
-                        int childIdx = firstChildIdx + childOrder[c];
-                        if (childIdx < nNodes && stackSize < MAX_STACK_SIZE - 1)
-                        {
-                            localStack[stackSize++] = childIdx;
-                        }
-                    }
-                }
-                else
-                {
-
-#pragma unroll
-                    for (int c = 0; c < 8; c++)
-                    {
-                        int childIdx = firstChildIdx + c;
-                        if (childIdx < nNodes && stackSize < MAX_STACK_SIZE - 1)
-                        {
-                            localStack[stackSize++] = childIdx;
-                        }
-                    }
-                }
-            }
-        }
-        else
-        {
-
-            double dist = sqrt(distSqr);
-            double invDist3 = 1.0 / (dist * distSqr);
-            acc = acc + dir * (node.mass * invDist3);
-        }
-    }
-
-    bodies[realBodyIdx].acceleration = acc;
-
-    bodies[realBodyIdx].velocity = bodies[realBodyIdx].velocity + acc * DT;
-
-    bodies[realBodyIdx].position = bodies[realBodyIdx].position + bodies[realBodyIdx].velocity * DT;
-}
-
-__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy)
-{
-
-    extern __shared__ double sharedEnergy[];
-    double *sharedPotential = sharedEnergy;
-    double *sharedKinetic = &sharedEnergy[blockDim.x];
-
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int tx = threadIdx.x;
-
-    sharedPotential[tx] = 0.0;
-    sharedKinetic[tx] = 0.0;
-
-    if (i < nBodies)
-    {
-
-        if (bodies[i].isDynamic)
-        {
-            double vSquared = bodies[i].velocity.lengthSquared();
-            sharedKinetic[tx] = 0.5 * bodies[i].mass * vSquared;
-        }
-
-        for (int j = i + 1; j < nBodies; j++)
-        {
-
-            Vector r = bodies[j].position - bodies[i].position;
-
-            double distSqr = r.lengthSquared() + (E * E);
-            double dist = sqrt(distSqr);
-
-            if (dist < COLLISION_TH)
-                continue;
-
-            sharedPotential[tx] -= GRAVITY * bodies[i].mass * bodies[j].mass / dist;
-        }
-    }
-
-    __syncthreads();
-
-    for (int s = blockDim.x / 2; s > 0; s >>= 1)
-    {
-        if (tx < s)
-        {
-            sharedPotential[tx] += sharedPotential[tx + s];
-            sharedKinetic[tx] += sharedKinetic[tx + s];
-        }
-        __syncthreads();
-    }
-
-    if (tx == 0)
-    {
-        atomicAdd(d_potentialEnergy, sharedPotential[0]);
-        atomicAdd(d_kineticEnergy, sharedKinetic[0]);
-    }
-}
-
-__constant__ uint8_t d_hilbertMap[8][8] = {
-    {0, 1, 3, 2, 7, 6, 4, 5},
-    {4, 5, 7, 6, 0, 1, 3, 2},
-    {6, 7, 5, 4, 2, 3, 1, 0},
-    {2, 3, 1, 0, 6, 7, 5, 4},
-    {0, 7, 1, 6, 3, 4, 2, 5},
-    {6, 1, 7, 0, 5, 2, 4, 3},
-    {2, 5, 3, 4, 1, 6, 0, 7},
-    {4, 3, 5, 2, 7, 0, 6, 1}};
-
-__constant__ uint8_t d_nextState[8][8] = {
-    {0, 1, 3, 2, 7, 6, 4, 5},
-    {1, 0, 2, 3, 4, 5, 7, 6},
-    {2, 3, 1, 0, 5, 4, 6, 7},
-    {3, 2, 0, 1, 6, 7, 5, 4},
-    {4, 5, 7, 6, 0, 1, 3, 2},
-    {5, 4, 6, 7, 1, 0, 2, 3},
-    {6, 7, 5, 4, 2, 3, 1, 0},
-    {7, 6, 4, 5, 3, 2, 0, 1}};
-
-__global__ void extractPositionsAndCalculateKeysKernel(
-    Body *bodies,
-    uint64_t *keys,
-    int nBodies,
-    Vector minBound,
-    Vector maxBound,
-    bool isHilbert)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= nBodies)
-        return;
-
-    // Extraer posición directamente del cuerpo
-    Vector pos = bodies[i].position;
-
-    // Precalcular los rangos inversos para evitar divisiones
-    double invRangeX = 1.0 / (maxBound.x - minBound.x);
-    double invRangeY = 1.0 / (maxBound.y - minBound.y);
-    double invRangeZ = 1.0 / (maxBound.z - minBound.z);
-
-    // Normalizar las coordenadas al rango [0,1)
-    double normalizedX = (pos.x - minBound.x) * invRangeX;
-    double normalizedY = (pos.y - minBound.y) * invRangeY;
-    double normalizedZ = (pos.z - minBound.z) * invRangeZ;
-
-    // Asegurar que están dentro del rango para evitar desbordamientos
-    normalizedX = fmax(0.0, fmin(0.999999, normalizedX));
-    normalizedY = fmax(0.0, fmin(0.999999, normalizedY));
-    normalizedZ = fmax(0.0, fmin(0.999999, normalizedZ));
-
-    // Convertir a enteros para el cálculo de claves
-    // Usar 20 bits para mayor precisión (1M valores)
-    const uint32_t MAX_COORD = (1 << 20) - 1;
-
-    uint32_t x = static_cast<uint32_t>(normalizedX * MAX_COORD);
-    uint32_t y = static_cast<uint32_t>(normalizedY * MAX_COORD);
-    uint32_t z = static_cast<uint32_t>(normalizedZ * MAX_COORD);
-
-    uint64_t key;
-
-    if (!isHilbert)
-    {
-        // Codificación Morton (Z-order) optimizada
-        // Método de dispersión de bits
-        x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
-        x = (x | (x << 8)) & 0x00FF00FF00FF00FF;
-        x = (x | (x << 4)) & 0x0F0F0F0F0F0F0F0F;
-        x = (x | (x << 2)) & 0x3333333333333333;
-        x = (x | (x << 1)) & 0x5555555555555555;
-
-        y = (y | (y << 16)) & 0x0000FFFF0000FFFF;
-        y = (y | (y << 8)) & 0x00FF00FF00FF00FF;
-        y = (y | (y << 4)) & 0x0F0F0F0F0F0F0F0F;
-        y = (y | (y << 2)) & 0x3333333333333333;
-        y = (y | (y << 1)) & 0x5555555555555555;
-
-        z = (z | (z << 16)) & 0x0000FFFF0000FFFF;
-        z = (z | (z << 8)) & 0x00FF00FF00FF00FF;
-        z = (z | (z << 4)) & 0x0F0F0F0F0F0F0F0F;
-        z = (z | (z << 2)) & 0x3333333333333333;
-        z = (z | (z << 1)) & 0x5555555555555555;
-
-        // Combinar los bits esparcidos
-        key = x | (y << 1) | (z << 2);
-    }
-    else
-    {
-        // Codificación de curva Hilbert usando tablas en memoria constante
-        uint8_t state = 0;
-        key = 0;
-
-        // Comienza con el bit más significativo
-        {
-            uint8_t octant = 0;
-            if (x & 0x80000)
-                octant |= 1;
-            if (y & 0x80000)
-                octant |= 2;
-            if (z & 0x80000)
-                octant |= 4;
-
-            uint8_t position = d_hilbertMap[state][octant];
-            key = (key << 3) | position;
-            state = d_nextState[state][octant];
-        }
-
-        {
-            uint8_t octant = 0;
-            if (x & 0x40000)
-                octant |= 1;
-            if (y & 0x40000)
-                octant |= 2;
-            if (z & 0x40000)
-                octant |= 4;
-
-            uint8_t position = d_hilbertMap[state][octant];
-            key = (key << 3) | position;
-            state = d_nextState[state][octant];
-        }
-
-        {
-            uint8_t octant = 0;
-            if (x & 0x20000)
-                octant |= 1;
-            if (y & 0x20000)
-                octant |= 2;
-            if (z & 0x20000)
-                octant |= 4;
-
-            uint8_t position = d_hilbertMap[state][octant];
-            key = (key << 3) | position;
-            state = d_nextState[state][octant];
-        }
-
-        {
-            uint8_t octant = 0;
-            if (x & 0x10000)
-                octant |= 1;
-            if (y & 0x10000)
-                octant |= 2;
-            if (z & 0x10000)
-                octant |= 4;
-
-            uint8_t position = d_hilbertMap[state][octant];
-            key = (key << 3) | position;
-            state = d_nextState[state][octant];
-        }
-
-        // Procesar los siguientes bits en grupos de 4
-        // Para mantener un código más compacto y eficiente
-        for (int j = 0; j < 4; j++)
-        {
-            int shift = 12 - j * 4;
-
-            for (int b = 0; b < 4; b++)
-            {
-                uint8_t octant = 0;
-                uint32_t mask = 1 << (shift + b);
-
-                if (x & mask)
-                    octant |= 1;
-                if (y & mask)
-                    octant |= 2;
-                if (z & mask)
-                    octant |= 4;
-
-                uint8_t position = d_hilbertMap[state][octant];
-                key = (key << 3) | position;
-                state = d_nextState[state][octant];
-            }
-        }
-    }
-
-    // Guardar la clave calculada
-    keys[i] = key;
-}
-
 class SFCBarnesHutGPU
 {
 private:
@@ -1803,7 +1101,7 @@ private:
 
         cudaDeviceSynchronize();
 
-        CudaTimer timer(metrics.energyCalculationTimeMs);
+        CudaTimer timer(metrics.simTimeMs);
 
         CHECK_CUDA_ERROR(cudaMemset(d_potentialEnergy, 0, sizeof(double)));
         CHECK_CUDA_ERROR(cudaMemset(d_kineticEnergy, 0, sizeof(double)));
@@ -1949,12 +1247,7 @@ public:
 
         CHECK_CUDA_ERROR(cudaMalloc(&d_bodies, nBodies * sizeof(Body)));
         CHECK_CUDA_ERROR(cudaMalloc(&d_bodiesBuffer, nBodies * sizeof(Body)));
-        
-        // Añadir padding para prevenir accesos fuera de límites
-        size_t paddedNodeSize = nNodes + 128; // Añadir 128 nodos de padding
-        CHECK_CUDA_ERROR(cudaMalloc(&d_nodes, paddedNodeSize * sizeof(Node)));
-        CHECK_CUDA_ERROR(cudaMemset(d_nodes, 0, paddedNodeSize * sizeof(Node)));
-        
+        CHECK_CUDA_ERROR(cudaMalloc(&d_nodes, nNodes * sizeof(Node)));
         CHECK_CUDA_ERROR(cudaMalloc(&d_mutex, nNodes * sizeof(int)));
 
         if (useSFC)
@@ -2020,51 +1313,65 @@ public:
     {
         CudaTimer timer(metrics.bboxTimeMs);
 
-        int blockSize = g_blockSize;
-        int gridSize = (nBodies + blockSize - 1) / blockSize;
+        // Compute node bounds on CPU side
+        if (h_bodies == nullptr || nBodies <= 0)
+            return;
 
-        size_t sharedMemSize = 6 * blockSize * sizeof(double);
-        ComputeBoundingBoxKernel<<<gridSize, blockSize, sharedMemSize>>>(d_nodes, d_bodies, d_orderedIndices, useSFC, d_mutex, nBodies);
-        CHECK_LAST_CUDA_ERROR();
+        Vector minPos = Vector(INFINITY, INFINITY, INFINITY);
+        Vector maxPos = Vector(-INFINITY, -INFINITY, -INFINITY);
+
+        // Copy positions from device to host
+        for (int i = 0; i < nBodies; i++) {
+            size_t offset = i * sizeof(Body) + offsetof(Body, position);
+            Vector pos;
+            cudaMemcpy(&pos, (char *)d_bodies + offset, sizeof(Vector), cudaMemcpyDeviceToHost);
+            
+            minPos.x = std::min(minPos.x, pos.x);
+            minPos.y = std::min(minPos.y, pos.y);
+            minPos.z = std::min(minPos.z, pos.z);
+            
+            maxPos.x = std::max(maxPos.x, pos.x);
+            maxPos.y = std::max(maxPos.y, pos.y);
+            maxPos.z = std::max(maxPos.z, pos.z);
+        }
+
+        // Add padding
+        Vector padding = (maxPos - minPos) * 0.01;
+        minPos = minPos - padding;
+        maxPos = maxPos + padding;
+
+        // Create a temporary node structure to copy to device
+        Node rootNode;
+        rootNode.min = minPos;
+        rootNode.max = maxPos;
+        rootNode.bodyIndex = 0;
+        rootNode.bodyCount = nBodies;
+        rootNode.isLeaf = true;
+        rootNode.position = (minPos + maxPos) * 0.5;
+        rootNode.mass = 0.0;
+        
+        // Calculate the radius
+        Vector dimensions = maxPos - minPos;
+        rootNode.radius = max(max(dimensions.x, dimensions.y), dimensions.z) * 0.5;
+
+        // Copy root node to device
+        cudaMemcpy(d_nodes, &rootNode, sizeof(Node), cudaMemcpyHostToDevice);
     }
 
     void constructOctree()
     {
-        CudaTimer timer(metrics.buildTimeMs);
+        CudaTimer timer(metrics.octreeTimeMs);
 
         int blockSize = g_blockSize;
-
-        size_t sharedMemSize = blockSize * sizeof(double) +
-                               blockSize * sizeof(double3);
-
-        // Verificar y reiniciar el contador de nodos si es necesario
-        int nodeCounter = 0;
-        cudaMemcpy(&d_nodes[nNodes - 1].bodyCount, &nodeCounter, sizeof(int), cudaMemcpyHostToDevice);
-
-        ConstructOctTreeKernel<<<1, blockSize, sharedMemSize>>>(d_nodes, d_bodies, d_bodiesBuffer, d_orderedIndices, useSFC, 0, nNodes, nBodies, leafLimit);
-        CHECK_LAST_CUDA_ERROR();
         
-        // Check if tree construction failed
-        Node rootNode;
-        cudaMemcpy(&rootNode, d_nodes, sizeof(Node), cudaMemcpyDeviceToHost);
-        if (rootNode.bodyCount == -999) {
-            std::cerr << "\n\n=================================================" << std::endl;
-            std::cerr << "ERROR: Octree construction failed. Consider increasing the number of nodes." << std::endl;
-            std::cerr << "Current settings: Bodies: " << nBodies << ", Nodes: " << nNodes << std::endl;
-            std::cerr << "Recommended setting: at least " << nBodies * 32 << " nodes for " << nBodies << " bodies." << std::endl;
-            std::cerr << "=================================================\n\n" << std::endl;
-            
-            // Reiniciar el árbol para que la simulación pueda continuar aunque con errores
-            resetOctree();
-        }
+        // Calculate required shared memory size for the kernel
+        size_t sharedMemSize = blockSize * sizeof(double) + blockSize * sizeof(double3);
 
-        // Verificar cuántos nodos se han utilizado realmente
-        int usedNodes = 0;
-        cudaMemcpy(&usedNodes, &d_nodes[nNodes - 1].bodyCount, sizeof(int), cudaMemcpyDeviceToHost);
-        if (usedNodes > nNodes * 0.9) {
-            std::cerr << "ADVERTENCIA: El árbol está utilizando " << usedNodes << " nodos (" 
-                      << (usedNodes * 100.0 / nNodes) << "% de capacidad)" << std::endl;
-        }
+        // Launch the kernel with a single block
+        ConstructOctTreeKernel<<<1, blockSize, sharedMemSize>>>(
+            d_nodes, d_bodies, d_bodiesBuffer, 0, nNodes, nBodies, leafLimit);
+        
+        CHECK_LAST_CUDA_ERROR();
     }
 
     void computeForces()
@@ -2074,38 +1381,10 @@ public:
         int blockSize = g_blockSize;
         int gridSize = (nBodies + blockSize - 1) / blockSize;
 
-        constexpr int MAX_STACK = 32;
-
-        size_t sharedMemSize = blockSize * MAX_STACK * sizeof(int);
-
-        int device;
-        cudaGetDevice(&device);
-        cudaDeviceProp props;
-        cudaGetDeviceProperties(&props, device);
-
-        if (sharedMemSize > props.sharedMemPerBlock)
-        {
-
-            int maxThreads = props.sharedMemPerBlock / (MAX_STACK * sizeof(int));
-            maxThreads = (maxThreads / 32) * 32;
-            if (maxThreads < 32)
-            {
-
-                blockSize = 32;
-
-                sharedMemSize = props.sharedMemPerBlock / 32 * 32;
-            }
-            else
-            {
-                blockSize = maxThreads;
-                sharedMemSize = blockSize * MAX_STACK * sizeof(int);
-            }
-
-            gridSize = (nBodies + blockSize - 1) / blockSize;
-        }
-
-        ComputeForceKernel<<<gridSize, blockSize, sharedMemSize>>>(
-            d_nodes, d_bodies, d_orderedIndices, useSFC, nNodes, nBodies, leafLimit, g_theta);
+        // Launch the force calculation kernel
+        ComputeForceKernel<<<gridSize, blockSize>>>(
+            d_nodes, d_bodies, nNodes, nBodies, leafLimit, g_theta);
+            
         CHECK_LAST_CUDA_ERROR();
     }
 
@@ -2149,7 +1428,7 @@ public:
         printf("Performance Metrics:\n");
         printf("  Reset:       %.2f ms\n", metrics.resetTimeMs);
         printf("  Bounding box: %.2f ms\n", metrics.bboxTimeMs);
-        printf("  Tree build:   %.2f ms\n", metrics.buildTimeMs);
+        printf("  Tree build:   %.2f ms\n", metrics.octreeTimeMs);
         printf("  Force calc:   %.2f ms\n", metrics.forceTimeMs);
         if (useSFC)
         {
@@ -2231,7 +1510,7 @@ public:
 
             totalTime += metrics.totalTimeMs;
             totalForceTime += metrics.forceTimeMs;
-            totalBuildTime += metrics.buildTimeMs;
+            totalBuildTime += metrics.octreeTimeMs;
             totalBboxTime += metrics.bboxTimeMs;
             totalReorderTime += metrics.reorderTimeMs;
             minTime = std::min(minTime, metrics.totalTimeMs);
@@ -2272,10 +1551,10 @@ public:
 
     float getTotalTime() const { return metrics.totalTimeMs; }
     float getForceCalculationTime() const { return metrics.forceTimeMs; }
-    float getBuildTime() const { return metrics.buildTimeMs; }
+    float getBuildTime() const { return metrics.octreeTimeMs; }
     float getBboxTime() const { return metrics.bboxTimeMs; }
     float getReorderTime() const { return metrics.reorderTimeMs; }
-    float getEnergyCalculationTime() const { return metrics.energyCalculationTimeMs; }
+    float getEnergyCalculationTime() const { return metrics.simTimeMs; }
     double getPotentialEnergy() const { return potentialEnergy; }
     double getKineticEnergy() const { return kineticEnergy; }
     double getTotalEnergy() const { return potentialEnergy + kineticEnergy; }
@@ -2288,13 +1567,13 @@ public:
     bool isDynamicReordering() const { return true; }
     double getTheta() const { return g_theta; }
     const char *getSortType() const { return useSFC ? (curveType == sfc::CurveType::MORTON ? "MORTON" : "HILBERT") : "NONE"; }
-    float getTreeBuildTime() const { return metrics.buildTimeMs; }
+    float getTreeBuildTime() const { return metrics.octreeTimeMs; }
     float getSortTime() const { return metrics.reorderTimeMs; }
 
     void printSummary(int steps)
     {
         double totalTime = metrics.totalTimeMs;
-        double totalBuildTime = metrics.buildTimeMs;
+        double totalBuildTime = metrics.octreeTimeMs;
         double totalBboxTime = metrics.bboxTimeMs;
         double totalForceTime = metrics.forceTimeMs;
         double totalReorderTime = metrics.reorderTimeMs;
@@ -2345,9 +1624,7 @@ int main(int argc, char **argv)
     parser.add_argument("theta", "Barnes-Hut opening angle parameter", DEFAULT_THETA);
     parser.add_argument("sm", "Shared memory size per block (bytes, 0=auto)", 0);
     parser.add_argument("leaf", "Maximum bodies per leaf node", 1);
-    parser.add_flag("show-configs", "Show available GPU configurations");
     parser.add_flag("energy", "Calculate system energy");
-    parser.add_flag("disable-reuse", "Disable cell reuse in tree construction");
     
     // Parse command line arguments
     try {
@@ -2399,12 +1676,9 @@ int main(int argc, char **argv)
     g_blockSize = blockSize;
     g_theta = theta;
 
-    // Factor de nodos aumentado para manejar grandes cantidades de cuerpos
-    int nodeMultiplier = 24; // Aumentado de 16 a 24 para proporcionar mucho más espacio
-    
     SFCBarnesHutGPU simulation(
         nBodies,
-        nBodies * nodeMultiplier,  // Más nodos para evitar desbordamientos
+        nBodies * 16, // Increased from 8 to 16 to provide more nodes
         8,
         bodyDist,
         massDist,
