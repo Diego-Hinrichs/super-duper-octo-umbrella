@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <deque>
 #include <numeric>
+#include "../../argparse.hpp"
 
 class DynamicReorderingStrategy
 {
@@ -706,183 +707,57 @@ bool ensureDirExists(const std::string &dirPath)
     }
 }
 
-void initializeCsv(const std::string &filename, bool append = false)
-{
-    size_t pos = filename.find_last_of('/');
-    if (pos != std::string::npos)
-    {
-        std::string dirPath = filename.substr(0, pos);
-        if (!ensureDirExists(dirPath))
-        {
-            std::cerr << "Error: No se puede crear el directorio para el archivo " << filename << std::endl;
-            return;
-        }
-    }
-
-    std::ofstream file;
-    if (append)
-    {
-        file.open(filename, std::ios::app);
-    }
-    else
-    {
-        file.open(filename);
-    }
-
-    if (!file.is_open())
-    {
-        std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura" << std::endl;
-        return;
-    }
-
-    if (!append)
-    {
-        file << "timestamp,method,bodies,steps,threads,sort_type,total_time_ms,avg_step_time_ms,force_calculation_time_ms,sort_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
-    }
-
-    file.close();
-    std::cout << "Archivo CSV " << (append ? "actualizado" : "inicializado") << ": " << filename << std::endl;
-}
-
-void saveMetrics(const std::string &filename,
-                 int bodies,
-                 int steps,
-                 int threads,
-                 int sortType,
-                 double totalTime,
-                 double forceCalculationTime,
-                 double sortTime,
-                 double potentialEnergy,
-                 double kineticEnergy,
-                 double totalEnergy)
-{
-    std::ofstream file(filename, std::ios::app);
-    if (!file.is_open())
-    {
-        std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura." << std::endl;
-        return;
-    }
-
-    auto now = std::chrono::system_clock::now();
-    auto now_c = std::chrono::system_clock::to_time_t(now);
-    std::stringstream timestamp;
-    timestamp << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S");
-
-    double avgTimePerStep = totalTime / steps;
-
-    file << timestamp.str() << ","
-         << "CPU_Direct_Sum" << ","
-         << bodies << ","
-         << steps << ","
-         << threads << ","
-         << sortType << ","
-         << totalTime << ","
-         << avgTimePerStep << ","
-         << forceCalculationTime << ","
-         << sortTime << ","
-         << potentialEnergy << ","
-         << kineticEnergy << ","
-         << totalEnergy << std::endl;
-
-    file.close();
-    std::cout << "Métricas guardadas en: " << filename << std::endl;
-}
-
 int main(int argc, char *argv[])
 {
-    int nBodies = 1000;
-    int steps = 100;
-    int threads = 0;
-    bool useOpenMP = true;
-    bool useSFC = true;
-    SFCType sfcType = SFCType::MORTON;
-    int reorderFreq = 10;
-    bool useDynamicReordering = false;
+    ArgumentParser parser("DirectSum CPU Simulation");
+    
+    // Add arguments with help messages and default values
+    parser.add_argument("n", "Number of bodies", 1000);
+    parser.add_argument("s", "Number of simulation steps", 100);
+    parser.add_argument("t", "Number of threads (0 = auto)", 0);
+    parser.add_flag("no-omp", "Disable OpenMP parallelization");
+    parser.add_flag("no-sfc", "Disable Space-Filling Curve optimization");
+    parser.add_flag("hilbert", "Use Hilbert curve instead of Morton curve");
+    parser.add_argument("f", "Reorder frequency", 10);
+    parser.add_flag("dynamic", "Use dynamic reordering");
+    parser.add_flag("solar", "Use solar system distribution");
+    parser.add_flag("galaxy", "Use galaxy distribution");
+    parser.add_flag("collision", "Use collision distribution");
+    parser.add_flag("normal-mass", "Use normal distribution for mass");
+    
+    // Parse command line arguments
+    try {
+        parser.parse_args(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        parser.print_help();
+        return 1;
+    }
+    
+    // Extract parsed arguments
+    int nBodies = parser.get<int>("n");
+    int steps = parser.get<int>("s");
+    int threads = parser.get<int>("t");
+    bool useOpenMP = !parser.get<bool>("no-omp");
+    bool useSFC = !parser.get<bool>("no-sfc");
+    SFCType sfcType = parser.get<bool>("hilbert") ? SFCType::HILBERT : SFCType::MORTON;
+    int reorderFreq = parser.get<int>("f");
+    bool useDynamicReordering = parser.get<bool>("dynamic");
+    
     BodyDistribution dist = BodyDistribution::RANDOM_UNIFORM;
-    MassDistribution massDist = MassDistribution::UNIFORM;
-    std::string metricsFile = "metrics/direct_sum_metrics.csv";
-
-    for (int i = 1; i < argc; ++i)
-    {
-        std::string arg = argv[i];
-        if (arg == "-n" && i + 1 < argc)
-        {
-            nBodies = std::stoi(argv[++i]);
-        }
-        else if (arg == "-s" && i + 1 < argc)
-        {
-            steps = std::stoi(argv[++i]);
-        }
-        else if (arg == "-t" && i + 1 < argc)
-        {
-            threads = std::stoi(argv[++i]);
-        }
-        else if (arg == "-no-omp")
-        {
-            useOpenMP = false;
-        }
-        else if (arg == "-no-sfc")
-        {
-            useSFC = false;
-        }
-        else if (arg == "-hilbert")
-        {
-            sfcType = SFCType::HILBERT;
-        }
-        else if (arg == "-f" && i + 1 < argc)
-        {
-            reorderFreq = std::stoi(argv[++i]);
-        }
-        else if (arg == "-dynamic")
-        {
-            useDynamicReordering = true;
-        }
-        else if (arg == "-solar")
-        {
-            dist = BodyDistribution::SOLAR_SYSTEM;
-        }
-        else if (arg == "-galaxy")
-        {
-            dist = BodyDistribution::GALAXY;
-        }
-        else if (arg == "-collision")
-        {
-            dist = BodyDistribution::COLLISION;
-        }
-        else if (arg == "-normal-mass")
-        {
-            massDist = MassDistribution::NORMAL;
-        }
-        else if (arg == "-o" && i + 1 < argc)
-        {
-            metricsFile = argv[++i];
-        }
+    if (parser.get<bool>("solar")) {
+        dist = BodyDistribution::SOLAR_SYSTEM;
+    } else if (parser.get<bool>("galaxy")) {
+        dist = BodyDistribution::GALAXY;
+    } else if (parser.get<bool>("collision")) {
+        dist = BodyDistribution::COLLISION;
     }
-
-    std::ifstream checkFile(metricsFile);
-    bool fileExists = checkFile.good();
-    checkFile.close();
-
-    if (!fileExists)
-    {
-        initializeCsv(metricsFile);
-    }
+    
+    MassDistribution massDist = parser.get<bool>("normal-mass") ? MassDistribution::NORMAL : MassDistribution::UNIFORM;
 
     CPUDirectSum simulation(nBodies, useOpenMP, threads, useSFC, sfcType, reorderFreq, dist, time(nullptr), massDist, useDynamicReordering);
     simulation.run(steps);
     simulation.printPerformanceMetrics();
-
-    saveMetrics(metricsFile,
-                simulation.getNumBodies(),
-                steps,
-                simulation.getNumThreads(),
-                simulation.getSortType(),
-                simulation.getTotalTime(),
-                simulation.getForceCalculationTime(),
-                simulation.getSortTime(),
-                simulation.getPotentialEnergy(),
-                simulation.getKineticEnergy(),
-                simulation.getTotalEnergy());
 
     return 0;
 }

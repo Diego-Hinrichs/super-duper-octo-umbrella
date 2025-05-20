@@ -17,8 +17,8 @@
 #include <cub/cub.cuh>
 #include <thrust/device_vector.h>
 #include <thrust/sequence.h>
+#include "../../argparse.hpp"
 
-__global__ void extractPositionsAndCalculateKeysKernel(Body *bodies, uint64_t *keys, int nBodies, Vector minBound, Vector maxBound, bool isHilbert);
 
 struct Vector
 {
@@ -121,6 +121,8 @@ struct Node
           min(),
           max() {}
 };
+
+__global__ void extractPositionsAndCalculateKeysKernel(Body *bodies, uint64_t *keys, int nBodies, Vector minBound, Vector maxBound, bool isHilbert);
 
 struct SimulationMetrics
 {
@@ -510,92 +512,7 @@ bool ensureDirExists(const std::string &dirPath)
     }
 }
 
-void initializeCsv(const std::string &filename, bool append = false)
-{
 
-    size_t pos = filename.find_last_of('/');
-    if (pos != std::string::npos)
-    {
-        std::string dirPath = filename.substr(0, pos);
-        if (!ensureDirExists(dirPath))
-        {
-            std::cerr << "Error: No se puede crear el directorio para el archivo " << filename << std::endl;
-            return;
-        }
-    }
-
-    std::ofstream file;
-    if (append)
-    {
-        file.open(filename, std::ios::app);
-    }
-    else
-    {
-        file.open(filename);
-    }
-
-    if (!file.is_open())
-    {
-        std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura" << std::endl;
-        return;
-    }
-
-    if (!append)
-    {
-        file << "timestamp,method,bodies,steps,block_size,theta,sort_type,total_time_ms,avg_step_time_ms,force_calculation_time_ms,tree_build_time_ms,sort_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
-    }
-
-    file.close();
-    std::cout << "Archivo CSV " << (append ? "actualizado" : "inicializado") << ": " << filename << std::endl;
-}
-
-void saveMetrics(const std::string &filename,
-                 int bodies,
-                 int steps,
-                 int blockSize,
-                 float theta,
-                 const char *sortType,
-                 float totalTime,
-                 float forceCalculationTime,
-                 float treeBuildTime,
-                 float sortTime,
-                 double potentialEnergy,
-                 double kineticEnergy,
-                 double totalEnergy)
-{
-    std::ofstream file(filename, std::ios::app);
-    if (!file.is_open())
-    {
-        std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura." << std::endl;
-        return;
-    }
-
-    auto now = std::chrono::system_clock::now();
-    auto now_c = std::chrono::system_clock::to_time_t(now);
-    std::stringstream timestamp;
-    timestamp << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S");
-
-    float avgTimePerStep = totalTime / steps;
-
-    file << timestamp.str() << ","
-         << "GPU_SFC_Barnes_Hut" << ","
-         << bodies << ","
-         << steps << ","
-         << blockSize << ","
-         << theta << ","
-         << sortType << ","
-         << totalTime << ","
-         << avgTimePerStep << ","
-         << forceCalculationTime << ","
-         << treeBuildTime << ","
-         << sortTime << ","
-         << potentialEnergy << ","
-         << kineticEnergy << ","
-         << totalEnergy << std::endl;
-
-    file.close();
-    std::cout << "Métricas guardadas en: " << filename << std::endl;
-}
 
 inline void checkCudaError(cudaError_t err, const char *const func, const char *const file, int line)
 {
@@ -1118,6 +1035,9 @@ __global__ void ComputeBoundingBoxKernel(Node *nodes, Body *bodies, int *ordered
 
 __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, int nNodes, int leafLimit)
 {
+    if (nodeIdx >= nNodes || nodeIdx < 0) {
+        return false;
+    }
 
     Node &node = nodes[nodeIdx];
 
@@ -1132,13 +1052,13 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
 
     if (node.isLeaf && node.bodyCount > 0)
     {
-
         if (nodeIdx >= leafLimit)
             return false;
 
         node.isLeaf = false;
         int firstChildIdx = atomicAdd(&nodes[nNodes - 1].bodyCount, 8);
 
+        // Check if we're about to exceed node array bounds
         if (firstChildIdx + 7 >= nNodes)
             return false;
 
@@ -1191,7 +1111,8 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
             child.radius = maxDim * 0.5;
         }
 
-        InsertBody(nodes, bodies, existingBodyIdx, firstChildIdx + childIdx, nNodes, leafLimit);
+        bool inserted = InsertBody(nodes, bodies, existingBodyIdx, firstChildIdx + childIdx, nNodes, leafLimit);
+        if (!inserted) return false; // If inserting existing body failed, stop this branch
     }
 
     Vector pos = bodies[bodyIdx].position;
@@ -1203,7 +1124,8 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
 
     if (node.firstChildIndex >= 0 && node.firstChildIndex + childIdx < nNodes)
     {
-        InsertBody(nodes, bodies, bodyIdx, node.firstChildIndex + childIdx, nNodes, leafLimit);
+        bool inserted = InsertBody(nodes, bodies, bodyIdx, node.firstChildIndex + childIdx, nNodes, leafLimit);
+        if (!inserted) return false; // If inserting new body failed, stop this branch
     }
 
     double totalMass = node.mass + bodies[bodyIdx].mass;
@@ -1223,7 +1145,6 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
 __global__ void ConstructOctTreeKernel(Node *nodes, Body *bodies, Body *bodyBuffer, int *orderedIndices, bool useSFC,
                                        int rootIdx, int nNodes, int nBodies, int leafLimit)
 {
-
     extern __shared__ double sharedMem[];
     double *totalMass = &sharedMem[0];
     double3 *centerMass = (double3 *)(totalMass + blockDim.x);
@@ -1232,12 +1153,20 @@ __global__ void ConstructOctTreeKernel(Node *nodes, Body *bodies, Body *bodyBuff
 
     for (int bodyIdx = i; bodyIdx < nBodies; bodyIdx += blockDim.x)
     {
-
         int realBodyIdx = (useSFC && orderedIndices != nullptr) ? orderedIndices[bodyIdx] : bodyIdx;
 
         bodyBuffer[bodyIdx] = bodies[realBodyIdx];
 
-        InsertBody(nodes, bodies, realBodyIdx, rootIdx, nNodes, leafLimit);
+        // Don't continue trying to insert bodies if we've failed once
+        if (!InsertBody(nodes, bodies, realBodyIdx, rootIdx, nNodes, leafLimit)) {
+            // If insertion fails, mark an error in a visible way
+            if (i == 0) {
+                // Only one thread needs to report the error
+                atomicExch(&nodes[0].bodyCount, -999); // Error marker
+            }
+            // Break out of the loop to avoid further issues
+            break;
+        }
     }
 }
 
@@ -2061,6 +1990,15 @@ public:
 
         ConstructOctTreeKernel<<<1, blockSize, sharedMemSize>>>(d_nodes, d_bodies, d_bodiesBuffer, d_orderedIndices, useSFC, 0, nNodes, nBodies, leafLimit);
         CHECK_LAST_CUDA_ERROR();
+        
+        // Check if tree construction failed
+        Node rootNode;
+        cudaMemcpy(&rootNode, d_nodes, sizeof(Node), cudaMemcpyDeviceToHost);
+        if (rootNode.bodyCount == -999) {
+            std::cerr << "ERROR: Octree construction failed. Consider increasing the number of nodes." << std::endl;
+            std::cerr << "Current settings: Bodies: " << nBodies << ", Nodes: " << nNodes << std::endl;
+            std::cerr << "Recommended setting: at least " << nBodies * 20 << " nodes for " << nBodies << " bodies." << std::endl;
+        }
     }
 
     void computeForces()
@@ -2326,98 +2264,78 @@ public:
 
 int main(int argc, char **argv)
 {
-
-    int nBodies = 10000;
-    bool useSFC = true;
-    int reorderFreq = 10;
-    BodyDistribution bodyDist = BodyDistribution::GALAXY;
-    MassDistribution massDist = MassDistribution::NORMAL;
-    unsigned int seed = 42;
-    sfc::CurveType curveType = sfc::CurveType::MORTON;
-    int numIterations = 100;
-    int blockSize = DEFAULT_BLOCK_SIZE;
-    double theta = DEFAULT_THETA;
-
-    bool saveMetricsToFile = false;
-    std::string metricsFile = "./SFCBarnesHutGPU_metrics.csv";
-
-    bool useDynamicReordering = true;
-
-    for (int i = 1; i < argc; i++)
-    {
-        std::string arg = argv[i];
-        if (arg == "-n" && i + 1 < argc)
-            nBodies = std::stoi(argv[++i]);
-        else if (arg == "-nosfc")
-            useSFC = false;
-        else if (arg == "-freq" && i + 1 < argc)
-            reorderFreq = std::stoi(argv[++i]);
-        else if (arg == "-dist" && i + 1 < argc)
-        {
-            std::string distType = argv[++i];
-            if (distType == "galaxy")
-                bodyDist = BodyDistribution::GALAXY;
-            else if (distType == "solar")
-                bodyDist = BodyDistribution::SOLAR_SYSTEM;
-            else if (distType == "uniform")
-                bodyDist = BodyDistribution::UNIFORM_SPHERE;
-            else if (distType == "random")
-                bodyDist = BodyDistribution::RANDOM;
-        }
-        else if (arg == "-mass" && i + 1 < argc)
-        {
-            std::string massType = argv[++i];
-            if (massType == "uniform")
-                massDist = MassDistribution::UNIFORM;
-            else if (massType == "normal")
-                massDist = MassDistribution::NORMAL;
-        }
-        else if (arg == "-seed" && i + 1 < argc)
-            seed = std::stoi(argv[++i]);
-        else if (arg == "-curve" && i + 1 < argc)
-        {
-            std::string curveStr = argv[++i];
-            if (curveStr == "morton")
-                curveType = sfc::CurveType::MORTON;
-            else if (curveStr == "hilbert")
-                curveType = sfc::CurveType::HILBERT;
-        }
-        else if (arg == "-iter" && i + 1 < argc)
-            numIterations = std::stoi(argv[++i]);
-        else if (arg == "-block" && i + 1 < argc)
-            blockSize = std::stoi(argv[++i]);
-        else if (arg == "-theta" && i + 1 < argc)
-            theta = std::stod(argv[++i]);
-        else if (arg == "--save-metrics")
-            saveMetricsToFile = true;
-        else if (arg == "--metrics-file" && i + 1 < argc)
-            metricsFile = argv[++i];
-        else if (arg == "-h" || arg == "--help")
-        {
-            std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
-            std::cout << "Options:" << std::endl;
-            std::cout << "  -n <num>          Number of bodies (default: 10000)" << std::endl;
-            std::cout << "  -nosfc            Disable Space-Filling Curve ordering" << std::endl;
-            std::cout << "  -freq <num>       Reordering frequency for fixed mode (default: 10)" << std::endl;
-            std::cout << "  -dist <type>      Body distribution: galaxy, solar, uniform, random (default: galaxy)" << std::endl;
-            std::cout << "  -mass <type>      Mass distribution: uniform, normal (default: normal)" << std::endl;
-            std::cout << "  -seed <num>       Random seed (default: 42)" << std::endl;
-            std::cout << "  -curve <type>     SFC curve type: morton, hilbert (default: morton)" << std::endl;
-            std::cout << "  -iter <num>       Number of iterations (default: 100)" << std::endl;
-            std::cout << "  -block <num>      CUDA block size (default: 256)" << std::endl;
-            std::cout << "  -theta <float>    Barnes-Hut opening angle parameter (default: 0.5)" << std::endl;
-            std::cout << "  --save-metrics    Save metrics to CSV file" << std::endl;
-            std::cout << "  --metrics-file <filename>  Name of CSV metrics file (default: SFCBarnesHutGPU_metrics.csv)" << std::endl;
-            return 0;
-        }
+    ArgumentParser parser("BarnesHut GPU Simulation");
+    
+    // Add arguments with help messages and default values
+    parser.add_argument("n", "Number of bodies", 10000);
+    parser.add_flag("nosfc", "Disable Space-Filling Curve ordering");
+    parser.add_argument("freq", "Reordering frequency for fixed mode", 10);
+    parser.add_argument("dist", "Body distribution (galaxy, solar, uniform, random)", std::string("galaxy"));
+    parser.add_argument("mass", "Mass distribution (uniform, normal)", std::string("normal"));
+    parser.add_argument("seed", "Random seed", 42);
+    parser.add_argument("curve", "SFC curve type (morton, hilbert)", std::string("morton"));
+    parser.add_argument("iter", "Number of iterations", 100);
+    parser.add_argument("block", "CUDA block size", DEFAULT_BLOCK_SIZE);
+    parser.add_argument("theta", "Barnes-Hut opening angle parameter", DEFAULT_THETA);
+    parser.add_argument("sm", "Shared memory size per block (bytes, 0=auto)", 0);
+    parser.add_argument("leaf", "Maximum bodies per leaf node", 1);
+    parser.add_flag("show-configs", "Show available GPU configurations");
+    parser.add_flag("energy", "Calculate system energy");
+    parser.add_flag("disable-reuse", "Disable cell reuse in tree construction");
+    
+    // Parse command line arguments
+    try {
+        parser.parse_args(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        parser.print_help();
+        return 1;
     }
+    
+    // Extract parsed arguments
+    int nBodies = parser.get<int>("n");
+    bool useSFC = !parser.get<bool>("nosfc");
+    int reorderFreq = parser.get<int>("freq");
+    
+    // Parse distribution type
+    std::string distStr = parser.get<std::string>("dist");
+    BodyDistribution bodyDist = BodyDistribution::GALAXY;
+    if (distStr == "solar") {
+        bodyDist = BodyDistribution::SOLAR_SYSTEM;
+    } else if (distStr == "uniform") {
+        bodyDist = BodyDistribution::UNIFORM_SPHERE;
+    } else if (distStr == "random") {
+        bodyDist = BodyDistribution::RANDOM;
+    }
+    
+    // Parse mass distribution
+    std::string massStr = parser.get<std::string>("mass");
+    MassDistribution massDist = MassDistribution::NORMAL;
+    if (massStr == "uniform") {
+        massDist = MassDistribution::UNIFORM;
+    }
+    
+    unsigned int seed = parser.get<int>("seed");
+    
+    // Parse curve type
+    std::string curveStr = parser.get<std::string>("curve");
+    sfc::CurveType curveType = sfc::CurveType::MORTON;
+    if (curveStr == "hilbert") {
+        curveType = sfc::CurveType::HILBERT;
+    }
+    
+    int numIterations = parser.get<int>("iter");
+    int blockSize = parser.get<int>("block");
+    double theta = parser.get<double>("theta");
+    
+    bool useDynamicReordering = true;
 
     g_blockSize = blockSize;
     g_theta = theta;
 
     SFCBarnesHutGPU simulation(
         nBodies,
-        nBodies * 8,
+        nBodies * 16, // Increased from 8 to 16 to provide more nodes
         8,
         bodyDist,
         massDist,
@@ -2427,36 +2345,6 @@ int main(int argc, char **argv)
         seed);
 
     simulation.runSimulation(numIterations);
-
-    if (saveMetricsToFile)
-    {
-
-        bool fileExists = false;
-        std::ifstream checkFile(metricsFile);
-        if (checkFile.good())
-        {
-            fileExists = true;
-        }
-        checkFile.close();
-
-        initializeCsv(metricsFile, fileExists);
-        saveMetrics(
-            metricsFile,
-            simulation.getNumBodies(),
-            numIterations,
-            simulation.getBlockSize(),
-            simulation.getTheta(),
-            simulation.getSortType(),
-            simulation.getTotalTime(),
-            simulation.getForceCalculationTime(),
-            simulation.getTreeBuildTime(),
-            simulation.getSortTime(),
-            simulation.getPotentialEnergy(),
-            simulation.getKineticEnergy(),
-            simulation.getTotalEnergy());
-
-        std::cout << "Métricas guardadas en: " << metricsFile << std::endl;
-    }
 
     return 0;
 }

@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <deque>
 #include <numeric>
+#include "../../argparse.hpp"
 
 struct Vector
 {
@@ -908,138 +909,37 @@ bool ensureDirExists(const std::string &dirPath)
     }
 }
 
-void initializeCsv(const std::string &filename, bool append = false)
-{
-    size_t pos = filename.find_last_of('/');
-    if (pos != std::string::npos)
-    {
-        std::string dirPath = filename.substr(0, pos);
-        if (!ensureDirExists(dirPath))
-        {
-            std::cerr << "Error: No se puede crear el directorio para el archivo " << filename << std::endl;
-            return;
-        }
-    }
-
-    std::ofstream file;
-    if (append)
-    {
-        file.open(filename, std::ios::app);
-    }
-    else
-    {
-        file.open(filename);
-    }
-
-    if (!file.is_open())
-    {
-        std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura" << std::endl;
-        return;
-    }
-
-    if (!append)
-    {
-        file << "timestamp,method,bodies,steps,threads,theta,total_time_ms,avg_step_time_ms,force_calculation_time_ms,tree_build_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
-    }
-
-    file.close();
-    std::cout << "Archivo CSV " << (append ? "actualizado" : "inicializado") << ": " << filename << std::endl;
-}
-
-void saveMetrics(const std::string &filename,
-                 int bodies,
-                 int steps,
-                 int threads,
-                 double theta,
-                 double totalTime,
-                 double forceCalculationTime,
-                 double treeBuildTime,
-                 double potentialEnergy,
-                 double kineticEnergy,
-                 double totalEnergy)
-{
-    std::ofstream file(filename, std::ios::app);
-    if (!file.is_open())
-    {
-        std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura." << std::endl;
-        return;
-    }
-
-    auto now = std::chrono::system_clock::now();
-    auto now_c = std::chrono::system_clock::to_time_t(now);
-    std::stringstream timestamp;
-    timestamp << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S");
-
-    double avgTimePerStep = totalTime / steps;
-
-    file << timestamp.str() << ","
-         << "CPU_Barnes_Hut" << ","
-         << bodies << ","
-         << steps << ","
-         << threads << ","
-         << theta << ","
-         << totalTime << ","
-         << avgTimePerStep << ","
-         << forceCalculationTime << ","
-         << treeBuildTime << ","
-         << potentialEnergy << ","
-         << kineticEnergy << ","
-         << totalEnergy << std::endl;
-
-    file.close();
-    std::cout << "Métricas guardadas en: " << filename << std::endl;
-}
-
 int main(int argc, char *argv[])
 {
-    int nBodies = 1000;
-    int steps = 100;
-    int threads = 0;
-    bool useOpenMP = true;
-    MassDistribution massDist = MassDistribution::UNIFORM;
-    bool useSFC = true;
-    SFCCurveType curveType = SFCCurveType::MORTON;
-
-    for (int i = 1; i < argc; i++)
-    {
-        std::string arg = argv[i];
-        if (arg == "-n" && i + 1 < argc)
-        {
-            nBodies = std::stoi(argv[++i]);
-        }
-        else if (arg == "-s" && i + 1 < argc)
-        {
-            steps = std::stoi(argv[++i]);
-        }
-        else if (arg == "-t" && i + 1 < argc)
-        {
-            threads = std::stoi(argv[++i]);
-        }
-        else if (arg == "-no-omp")
-        {
-            useOpenMP = false;
-        }
-        else if (arg == "-no-sfc")
-        {
-            useSFC = false;
-        }
-        else if (arg == "-hilbert")
-        {
-            curveType = SFCCurveType::HILBERT;
-        }
-        else if (arg == "-normal")
-        {
-            massDist = MassDistribution::NORMAL;
-        }
+    ArgumentParser parser("BarnesHut CPU Simulation");
+    
+    // Add arguments with help messages and default values
+    parser.add_argument("n", "Number of bodies", 1000);
+    parser.add_argument("s", "Number of simulation steps", 100);
+    parser.add_argument("t", "Number of threads (0 = auto)", 0);
+    parser.add_flag("no-omp", "Disable OpenMP parallelization");
+    parser.add_flag("no-sfc", "Disable Space-Filling Curve optimization");
+    parser.add_flag("hilbert", "Use Hilbert curve instead of Morton curve");
+    parser.add_flag("normal", "Use normal distribution for mass");
+    
+    // Parse command line arguments
+    try {
+        parser.parse_args(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        parser.print_help();
+        return 1;
     }
-
-    std::string metricsFile = "BarnesHutCPU_metrics.csv";
-    std::ifstream checkFile(metricsFile);
-    if (!checkFile.good())
-    {
-        initializeCsv(metricsFile);
-    }
-
+    
+    // Extract parsed arguments
+    int nBodies = parser.get<int>("n");
+    int steps = parser.get<int>("s");
+    int threads = parser.get<int>("t");
+    bool useOpenMP = !parser.get<bool>("no-omp");
+    bool useSFC = !parser.get<bool>("no-sfc");
+    SFCCurveType curveType = parser.get<bool>("hilbert") ? SFCCurveType::HILBERT : SFCCurveType::MORTON;
+    MassDistribution massDist = parser.get<bool>("normal") ? MassDistribution::NORMAL : MassDistribution::UNIFORM;
+    
     BarnesHut simulation(
         nBodies,
         useOpenMP,
@@ -1051,19 +951,6 @@ int main(int argc, char *argv[])
 
     simulation.run(steps);
     simulation.printPerformanceMetrics();
-
-    saveMetrics(
-        metricsFile,
-        simulation.getNumBodies(),
-        steps,
-        simulation.getNumThreads(),
-        simulation.getTheta(),
-        simulation.getTotalTime(),
-        simulation.getForceCalculationTime(),
-        simulation.getTreeBuildTime(),
-        simulation.getPotentialEnergy(),
-        simulation.getKineticEnergy(),
-        simulation.getTotalEnergy());
 
     return 0;
 }

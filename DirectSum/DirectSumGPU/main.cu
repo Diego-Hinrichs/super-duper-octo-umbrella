@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <deque>
 #include <numeric>
+#include "../../argparse.hpp"
 
 class SFCDynamicReorderingStrategy
 {
@@ -1098,176 +1099,66 @@ bool ensureDirExists(const std::string &dirPath)
     }
 }
 
-void initializeCsv(const std::string &filename, bool append = false)
-{
-
-    size_t pos = filename.find_last_of('/');
-    if (pos != std::string::npos)
-    {
-        std::string dirPath = filename.substr(0, pos);
-        if (!ensureDirExists(dirPath))
-        {
-            std::cerr << "Error: No se puede crear el directorio para el archivo " << filename << std::endl;
-            return;
-        }
-    }
-
-    std::ofstream file;
-    if (append)
-    {
-        file.open(filename, std::ios::app);
-    }
-    else
-    {
-        file.open(filename);
-    }
-
-    if (!file.is_open())
-    {
-        std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura" << std::endl;
-        return;
-    }
-
-    if (!append)
-    {
-        file << "timestamp,method,bodies,steps,block_size,sort_type,total_time_ms,avg_step_time_ms,force_calculation_time_ms,sort_time_ms,potential_energy,kinetic_energy,total_energy" << std::endl;
-    }
-
-    file.close();
-    std::cout << "Archivo CSV " << (append ? "actualizado" : "inicializado") << ": " << filename << std::endl;
-}
-
-void saveMetrics(const std::string &filename,
-                 int bodies,
-                 int steps,
-                 int blockSize,
-                 int sortType,
-                 float totalTime,
-                 float forceCalculationTime,
-                 float sortTime,
-                 double potentialEnergy,
-                 double kineticEnergy,
-                 double totalEnergy)
-{
-    std::ofstream file(filename, std::ios::app);
-    if (!file.is_open())
-    {
-        std::cerr << "Error: No se pudo abrir el archivo " << filename << " para escritura." << std::endl;
-        return;
-    }
-
-    auto now = std::chrono::system_clock::now();
-    auto now_c = std::chrono::system_clock::to_time_t(now);
-    std::stringstream timestamp;
-    timestamp << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S");
-
-    float avgTimePerStep = totalTime / steps;
-
-    file << timestamp.str() << ","
-         << "GPU_SFC_Direct_Sum" << ","
-         << bodies << ","
-         << steps << ","
-         << blockSize << ","
-         << sortType << ","
-         << totalTime << ","
-         << avgTimePerStep << ","
-         << forceCalculationTime << ","
-         << sortTime << ","
-         << potentialEnergy << ","
-         << kineticEnergy << ","
-         << totalEnergy << std::endl;
-
-    file.close();
-    std::cout << "Métricas guardadas en: " << filename << std::endl;
-}
-
 int main(int argc, char **argv)
 {
-
-    int nBodies = 10000;
-    bool useSFC = true;
-    int reorderFreq = 10;
-    BodyDistribution bodyDist = BodyDistribution::GALAXY;
-    MassDistribution massDist = MassDistribution::NORMAL;
-    unsigned int seed = 42;
-    sfc::CurveType curveType = sfc::CurveType::MORTON;
-    int numIterations = 100;
-    int blockSize = DEFAULT_BLOCK_SIZE;
-    bool useDynamicReordering = true;
-
-    bool saveMetricsToFile = false;
-    std::string metricsFile = "./SFCDirectSumGPU_metrics.csv";
-
-    for (int i = 1; i < argc; i++)
-    {
-        std::string arg = argv[i];
-        if (arg == "-n" && i + 1 < argc)
-            nBodies = std::stoi(argv[++i]);
-        else if (arg == "-nosfc")
-            useSFC = false;
-        else if (arg == "-freq" && i + 1 < argc)
-            reorderFreq = std::stoi(argv[++i]);
-        else if (arg == "-dist" && i + 1 < argc)
-        {
-            std::string distType = argv[++i];
-            if (distType == "galaxy")
-                bodyDist = BodyDistribution::GALAXY;
-            else if (distType == "solar")
-                bodyDist = BodyDistribution::SOLAR_SYSTEM;
-            else if (distType == "uniform")
-                bodyDist = BodyDistribution::UNIFORM_SPHERE;
-            else if (distType == "random")
-                bodyDist = BodyDistribution::RANDOM;
-        }
-        else if (arg == "-mass" && i + 1 < argc)
-        {
-            std::string massType = argv[++i];
-            if (massType == "uniform")
-                massDist = MassDistribution::UNIFORM;
-            else if (massType == "normal")
-                massDist = MassDistribution::NORMAL;
-        }
-        else if (arg == "-seed" && i + 1 < argc)
-            seed = std::stoi(argv[++i]);
-        else if (arg == "-curve" && i + 1 < argc)
-        {
-            std::string curveStr = argv[++i];
-            if (curveStr == "morton")
-                curveType = sfc::CurveType::MORTON;
-            else if (curveStr == "hilbert")
-                curveType = sfc::CurveType::HILBERT;
-        }
-        else if (arg == "-iter" && i + 1 < argc)
-            numIterations = std::stoi(argv[++i]);
-        else if (arg == "-block" && i + 1 < argc)
-            blockSize = std::stoi(argv[++i]);
-        else if (arg == "-h" || arg == "--help")
-        {
-            std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
-            std::cout << "Options:" << std::endl;
-            std::cout << "  -n <num>          Number of bodies (default: 10000)" << std::endl;
-            std::cout << "  -nosfc            Disable Space-Filling Curve ordering" << std::endl;
-            std::cout << "  -freq <num>       Reordering frequency (default: 10)" << std::endl;
-            std::cout << "  -dist <type>      Body distribution: galaxy, solar, uniform, random (default: galaxy)" << std::endl;
-            std::cout << "  -mass <type>      Mass distribution: uniform, normal (default: normal)" << std::endl;
-            std::cout << "  -seed <num>       Random seed (default: 42)" << std::endl;
-            std::cout << "  -curve <type>     SFC curve type: morton, hilbert (default: morton)" << std::endl;
-            std::cout << "  -iter <num>       Number of iterations (default: 100)" << std::endl;
-            std::cout << "  -block <num>      CUDA block size (default: 256)" << std::endl;
-            return 0;
-        }
-        else if (arg == "--save-metrics")
-        {
-            saveMetricsToFile = true;
-        }
-        else if (arg == "--metrics-file" && i + 1 < argc)
-        {
-            metricsFile = argv[++i];
-        }
-        else if (arg == "--dynamic-reordering")
-        {
-        }
+    ArgumentParser parser("DirectSum GPU Simulation");
+    
+    // Add arguments with help messages and default values
+    parser.add_argument("n", "Number of bodies", 10000);
+    parser.add_flag("nosfc", "Disable Space-Filling Curve ordering");
+    parser.add_argument("freq", "Reordering frequency", 10);
+    parser.add_argument("dist", "Body distribution (galaxy, solar, uniform, random)", std::string("galaxy"));
+    parser.add_argument("mass", "Mass distribution (uniform, normal)", std::string("normal"));
+    parser.add_argument("seed", "Random seed", 42);
+    parser.add_argument("curve", "SFC curve type (morton, hilbert)", std::string("morton"));
+    parser.add_argument("iter", "Number of iterations", 100);
+    parser.add_argument("block", "CUDA block size", DEFAULT_BLOCK_SIZE);
+    parser.add_flag("dynamic-reordering", "Use dynamic reordering");
+    
+    // Parse command line arguments
+    try {
+        parser.parse_args(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        parser.print_help();
+        return 1;
     }
+    
+    // Extract parsed arguments
+    int nBodies = parser.get<int>("n");
+    bool useSFC = !parser.get<bool>("nosfc");
+    int reorderFreq = parser.get<int>("freq");
+    
+    // Parse distribution type
+    std::string distStr = parser.get<std::string>("dist");
+    BodyDistribution bodyDist = BodyDistribution::GALAXY;
+    if (distStr == "solar") {
+        bodyDist = BodyDistribution::SOLAR_SYSTEM;
+    } else if (distStr == "uniform") {
+        bodyDist = BodyDistribution::UNIFORM_SPHERE;
+    } else if (distStr == "random") {
+        bodyDist = BodyDistribution::RANDOM;
+    }
+    
+    // Parse mass distribution
+    std::string massStr = parser.get<std::string>("mass");
+    MassDistribution massDist = MassDistribution::NORMAL;
+    if (massStr == "uniform") {
+        massDist = MassDistribution::UNIFORM;
+    }
+    
+    unsigned int seed = parser.get<int>("seed");
+    
+    // Parse curve type
+    std::string curveStr = parser.get<std::string>("curve");
+    sfc::CurveType curveType = sfc::CurveType::MORTON;
+    if (curveStr == "hilbert") {
+        curveType = sfc::CurveType::HILBERT;
+    }
+    
+    int numIterations = parser.get<int>("iter");
+    int blockSize = parser.get<int>("block");
+    bool useDynamicReordering = parser.get<bool>("dynamic-reordering");
 
     g_blockSize = blockSize;
 
@@ -1291,34 +1182,6 @@ int main(int argc, char **argv)
         useDynamicReordering);
 
     simulation.runSimulation(numIterations);
-
-    if (saveMetricsToFile)
-    {
-
-        bool fileExists = false;
-        std::ifstream checkFile(metricsFile);
-        if (checkFile.good())
-        {
-            fileExists = true;
-        }
-        checkFile.close();
-
-        initializeCsv(metricsFile, fileExists);
-        saveMetrics(
-            metricsFile,
-            simulation.getNumBodies(),
-            numIterations,
-            simulation.getBlockSize(),
-            simulation.getSortType(),
-            simulation.getTotalTime(),
-            simulation.getForceCalculationTime(),
-            simulation.getReorderTime(),
-            simulation.getPotentialEnergy(),
-            simulation.getKineticEnergy(),
-            simulation.getTotalEnergy());
-
-        std::cout << "Métricas guardadas en: " << metricsFile << std::endl;
-    }
 
     return 0;
 }
