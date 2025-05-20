@@ -1035,10 +1035,14 @@ __global__ void ComputeBoundingBoxKernel(Node *nodes, Body *bodies, int *ordered
 
 __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, int nNodes, int leafLimit)
 {
-    if (nodeIdx >= nNodes || nodeIdx < 0) {
+    // Verificación más estricta de índices
+    if (nodeIdx < 0 || nodeIdx >= nNodes - 1) {
         return false;
     }
-
+    
+    // Alineación explícita de acceso
+    nodeIdx = min(nodeIdx, nNodes - 2);
+    
     Node &node = nodes[nodeIdx];
 
     if (node.isLeaf && node.bodyCount == 0)
@@ -1054,13 +1058,23 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
     {
         if (nodeIdx >= leafLimit)
             return false;
-
+            
         node.isLeaf = false;
+        
+        // Verificar overflow antes de la operación atómica
+        int counter = nodes[nNodes - 1].bodyCount;
+        if (counter + 8 >= nNodes - 16) {
+            // Estamos cerca del límite, no permitir la expansión
+            node.isLeaf = true; // Revertir cambio
+            return false;
+        }
+        
         int firstChildIdx = atomicAdd(&nodes[nNodes - 1].bodyCount, 8);
 
-        // Check if we're about to exceed node array bounds
-        if (firstChildIdx + 7 >= nNodes)
+        // Doble verificación posterior a la operación atómica
+        if (firstChildIdx < 0 || firstChildIdx + 7 >= nNodes - 16) {
             return false;
+        }
 
         node.firstChildIndex = firstChildIdx;
 
@@ -1076,6 +1090,11 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
 
         for (int i = 0; i < 8; i++)
         {
+            // Verificar que el índice es válido
+            if (firstChildIdx + i < 0 || firstChildIdx + i >= nNodes - 1) {
+                return false;
+            }
+            
             Node &child = nodes[firstChildIdx + i];
             child.isLeaf = true;
             child.firstChildIndex = -1;
@@ -1111,8 +1130,15 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
             child.radius = maxDim * 0.5;
         }
 
+        // Verificar índice del hijo antes de insertar
+        if (childIdx < 0 || childIdx >= 8 || firstChildIdx + childIdx >= nNodes - 1) {
+            return false;
+        }
+        
         bool inserted = InsertBody(nodes, bodies, existingBodyIdx, firstChildIdx + childIdx, nNodes, leafLimit);
-        if (!inserted) return false; // If inserting existing body failed, stop this branch
+        if (!inserted) {
+            return false;
+        }
     }
 
     Vector pos = bodies[bodyIdx].position;
@@ -1122,10 +1148,14 @@ __device__ bool InsertBody(Node *nodes, Body *bodies, int bodyIdx, int nodeIdx, 
                    ((pos.y >= center.y) ? 2 : 0) |
                    ((pos.z >= center.z) ? 4 : 0);
 
-    if (node.firstChildIndex >= 0 && node.firstChildIndex + childIdx < nNodes)
+    // Verificación más estricta de índice
+    if (node.firstChildIndex >= 0 && childIdx >= 0 && childIdx < 8 && 
+        node.firstChildIndex + childIdx < nNodes - 1)
     {
         bool inserted = InsertBody(nodes, bodies, bodyIdx, node.firstChildIndex + childIdx, nNodes, leafLimit);
-        if (!inserted) return false; // If inserting new body failed, stop this branch
+        if (!inserted) {
+            return false;
+        }
     }
 
     double totalMass = node.mass + bodies[bodyIdx].mass;
@@ -1150,15 +1180,27 @@ __global__ void ConstructOctTreeKernel(Node *nodes, Body *bodies, Body *bodyBuff
     double3 *centerMass = (double3 *)(totalMass + blockDim.x);
 
     int i = threadIdx.x;
+    __shared__ int failureDetected;
+    
+    if (i == 0) {
+        failureDetected = 0;
+    }
+    __syncthreads();
 
-    for (int bodyIdx = i; bodyIdx < nBodies; bodyIdx += blockDim.x)
+    for (int bodyIdx = i; bodyIdx < nBodies && failureDetected == 0; bodyIdx += blockDim.x)
     {
         int realBodyIdx = (useSFC && orderedIndices != nullptr) ? orderedIndices[bodyIdx] : bodyIdx;
+
+        // Verifica índices dentro de límites seguros
+        if (realBodyIdx < 0 || realBodyIdx >= nBodies) {
+            continue;
+        }
 
         bodyBuffer[bodyIdx] = bodies[realBodyIdx];
 
         // Don't continue trying to insert bodies if we've failed once
         if (!InsertBody(nodes, bodies, realBodyIdx, rootIdx, nNodes, leafLimit)) {
+            atomicExch(&failureDetected, 1);
             // If insertion fails, mark an error in a visible way
             if (i == 0) {
                 // Only one thread needs to report the error
@@ -1168,6 +1210,8 @@ __global__ void ConstructOctTreeKernel(Node *nodes, Body *bodies, Body *bodyBuff
             break;
         }
     }
+    
+    __syncthreads();
 }
 
 __global__ void ComputeForceKernel(Node *nodes, Body *bodies, int *orderedIndices, bool useSFC,
@@ -1905,7 +1949,12 @@ public:
 
         CHECK_CUDA_ERROR(cudaMalloc(&d_bodies, nBodies * sizeof(Body)));
         CHECK_CUDA_ERROR(cudaMalloc(&d_bodiesBuffer, nBodies * sizeof(Body)));
-        CHECK_CUDA_ERROR(cudaMalloc(&d_nodes, nNodes * sizeof(Node)));
+        
+        // Añadir padding para prevenir accesos fuera de límites
+        size_t paddedNodeSize = nNodes + 128; // Añadir 128 nodos de padding
+        CHECK_CUDA_ERROR(cudaMalloc(&d_nodes, paddedNodeSize * sizeof(Node)));
+        CHECK_CUDA_ERROR(cudaMemset(d_nodes, 0, paddedNodeSize * sizeof(Node)));
+        
         CHECK_CUDA_ERROR(cudaMalloc(&d_mutex, nNodes * sizeof(int)));
 
         if (useSFC)
@@ -1988,6 +2037,10 @@ public:
         size_t sharedMemSize = blockSize * sizeof(double) +
                                blockSize * sizeof(double3);
 
+        // Verificar y reiniciar el contador de nodos si es necesario
+        int nodeCounter = 0;
+        cudaMemcpy(&d_nodes[nNodes - 1].bodyCount, &nodeCounter, sizeof(int), cudaMemcpyHostToDevice);
+
         ConstructOctTreeKernel<<<1, blockSize, sharedMemSize>>>(d_nodes, d_bodies, d_bodiesBuffer, d_orderedIndices, useSFC, 0, nNodes, nBodies, leafLimit);
         CHECK_LAST_CUDA_ERROR();
         
@@ -1995,9 +2048,22 @@ public:
         Node rootNode;
         cudaMemcpy(&rootNode, d_nodes, sizeof(Node), cudaMemcpyDeviceToHost);
         if (rootNode.bodyCount == -999) {
+            std::cerr << "\n\n=================================================" << std::endl;
             std::cerr << "ERROR: Octree construction failed. Consider increasing the number of nodes." << std::endl;
             std::cerr << "Current settings: Bodies: " << nBodies << ", Nodes: " << nNodes << std::endl;
-            std::cerr << "Recommended setting: at least " << nBodies * 20 << " nodes for " << nBodies << " bodies." << std::endl;
+            std::cerr << "Recommended setting: at least " << nBodies * 32 << " nodes for " << nBodies << " bodies." << std::endl;
+            std::cerr << "=================================================\n\n" << std::endl;
+            
+            // Reiniciar el árbol para que la simulación pueda continuar aunque con errores
+            resetOctree();
+        }
+
+        // Verificar cuántos nodos se han utilizado realmente
+        int usedNodes = 0;
+        cudaMemcpy(&usedNodes, &d_nodes[nNodes - 1].bodyCount, sizeof(int), cudaMemcpyDeviceToHost);
+        if (usedNodes > nNodes * 0.9) {
+            std::cerr << "ADVERTENCIA: El árbol está utilizando " << usedNodes << " nodos (" 
+                      << (usedNodes * 100.0 / nNodes) << "% de capacidad)" << std::endl;
         }
     }
 
@@ -2333,9 +2399,12 @@ int main(int argc, char **argv)
     g_blockSize = blockSize;
     g_theta = theta;
 
+    // Factor de nodos aumentado para manejar grandes cantidades de cuerpos
+    int nodeMultiplier = 24; // Aumentado de 16 a 24 para proporcionar mucho más espacio
+    
     SFCBarnesHutGPU simulation(
         nBodies,
-        nBodies * 16, // Increased from 8 to 16 to provide more nodes
+        nBodies * nodeMultiplier,  // Más nodos para evitar desbordamientos
         8,
         bodyDist,
         massDist,
