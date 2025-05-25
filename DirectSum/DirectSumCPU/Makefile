@@ -1,14 +1,16 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -march=native -fopenmp -Wall -Wextra
-TARGET = main
-SOURCE = main.cpp
+CXXFLAGS = -std=c++17 -O3 -fopenmp
+INCLUDES = -I../../
+
+SOURCES = main.cpp
+OUTPUT = main
 
 .PHONY: all clean
 
-all: $(TARGET)
+all: $(OUTPUT)
 
-$(TARGET): $(SOURCE)
-	$(CXX) $(CXXFLAGS) -o $@ $<
+$(OUTPUT): $(SOURCES)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $(OUTPUT) $(SOURCES)
 
 clean:
-	rm -f $(TARGET) 
+	rm -f $(OUTPUT) 

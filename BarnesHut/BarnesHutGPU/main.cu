@@ -469,8 +469,6 @@ enum class MassDistribution
     NORMAL
 };
 
-// Utilizamos las constantes de constants.cuh
-// Definir algunas constantes que no están en constants.cuh
 constexpr int DEFAULT_BLOCK_SIZE = 256;
 constexpr double DEFAULT_THETA = 0.5;
 
@@ -1611,7 +1609,6 @@ int main(int argc, char **argv)
 {
     ArgumentParser parser("BarnesHut GPU Simulation");
     
-    // Add arguments with help messages and default values
     parser.add_argument("n", "Number of bodies", 10000);
     parser.add_flag("nosfc", "Disable Space-Filling Curve ordering");
     parser.add_argument("freq", "Reordering frequency for fixed mode", 10);
