@@ -429,12 +429,68 @@ constexpr double CENTERY = 0;
 constexpr double CENTERZ = 0;
 
 constexpr int DEFAULT_BLOCK_SIZE = 256;
+constexpr double DEFAULT_DOMAIN_SIZE = 1.0e6; // Default domain size for periodic boundaries
 
 #define E SOFTENING_FACTOR
 #define DT TIME_STEP
 #define COLLISION_TH COLLISION_THRESHOLD
 
 int g_blockSize = DEFAULT_BLOCK_SIZE;
+double g_domainSize = DEFAULT_DOMAIN_SIZE;
+
+// Periodic boundary condition functions
+__device__ Vector applyPeriodicBoundary_device(Vector rij, double domainSize)
+{
+    Vector result = rij;
+    double halfDomain = domainSize * 0.5;
+    
+    // Apply minimum image convention
+    if (result.x > halfDomain) result.x -= domainSize;
+    else if (result.x < -halfDomain) result.x += domainSize;
+    
+    if (result.y > halfDomain) result.y -= domainSize;
+    else if (result.y < -halfDomain) result.y += domainSize;
+    
+    if (result.z > halfDomain) result.z -= domainSize;
+    else if (result.z < -halfDomain) result.z += domainSize;
+    
+    return result;
+}
+
+__device__ Vector applyPeriodicPosition_device(Vector position, double domainSize)
+{
+    Vector result = position;
+    
+    // Wrap positions to stay within [0, L)
+    result.x = fmod(result.x + domainSize, domainSize);
+    if (result.x < 0) result.x += domainSize;
+    
+    result.y = fmod(result.y + domainSize, domainSize);
+    if (result.y < 0) result.y += domainSize;
+    
+    result.z = fmod(result.z + domainSize, domainSize);
+    if (result.z < 0) result.z += domainSize;
+    
+    return result;
+}
+
+// Host versions for initialization
+Vector applyPeriodicPosition(Vector position, double domainSize)
+{
+    Vector result = position;
+    
+    // Wrap positions to stay within [0, L)
+    result.x = fmod(result.x + domainSize, domainSize);
+    if (result.x < 0) result.x += domainSize;
+    
+    result.y = fmod(result.y + domainSize, domainSize);
+    if (result.y < 0) result.y += domainSize;
+    
+    result.z = fmod(result.z + domainSize, domainSize);
+    if (result.z < 0) result.z += domainSize;
+    
+    return result;
+}
 
 inline void checkCudaError(cudaError_t err, const char *const func, const char *const file, int line)
 {
@@ -508,7 +564,7 @@ private:
     cudaEvent_t start, stop;
 };
 
-__global__ void SFCDirectSumForceKernel(Body *bodies, int *orderedIndices, bool useSFC, int nBodies)
+__global__ void SFCDirectSumForceKernel(Body *bodies, int *orderedIndices, bool useSFC, int nBodies, double domainSize)
 {
 
     extern __shared__ char sharedMemory[];
@@ -571,20 +627,21 @@ __global__ void SFCDirectSumForceKernel(Body *bodies, int *orderedIndices, bool 
                 if (jBody != i)
                 {
 
-                    double rx = sharedPos[j].x - myPos.x;
-                    double ry = sharedPos[j].y - myPos.y;
-                    double rz = sharedPos[j].z - myPos.z;
+                    Vector diff = sharedPos[j] - myPos;
+                    
+                    // Apply periodic boundary conditions
+                    diff = applyPeriodicBoundary_device(diff, domainSize);
 
-                    double distSqr = rx * rx + ry * ry + rz * rz + E * E;
+                    double distSqr = diff.lengthSquared() + E * E;
                     double dist = sqrt(distSqr);
 
                     if (dist >= COLLISION_TH)
                     {
                         double forceMag = (GRAVITY * myMass * sharedMass[j]) / (dist * distSqr);
 
-                        myAcc.x += rx * forceMag / myMass;
-                        myAcc.y += ry * forceMag / myMass;
-                        myAcc.z += rz * forceMag / myMass;
+                        myAcc.x += diff.x * forceMag / myMass;
+                        myAcc.y += diff.y * forceMag / myMass;
+                        myAcc.z += diff.z * forceMag / myMass;
                     }
                 }
             }
@@ -606,11 +663,14 @@ __global__ void SFCDirectSumForceKernel(Body *bodies, int *orderedIndices, bool 
         myPos.x += myVel.x * DT;
         myPos.y += myVel.y * DT;
         myPos.z += myVel.z * DT;
+        
+        // Apply periodic boundary conditions to positions
+        myPos = applyPeriodicPosition_device(myPos, domainSize);
         bodies[realBodyIndex].position = myPos;
     }
 }
 
-__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy)
+__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy, double domainSize)
 {
 
     extern __shared__ double sharedEnergy[];
@@ -636,6 +696,9 @@ __global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_pot
         {
 
             Vector r = bodies[j].position - bodies[i].position;
+            
+            // Apply periodic boundary conditions
+            r = applyPeriodicBoundary_device(r, domainSize);
 
             double distSqr = r.lengthSquared() + (E * E);
             double dist = sqrt(distSqr);
@@ -698,30 +761,9 @@ private:
 
     void updateBoundingBox()
     {
-
-        minBound = Vector(INFINITY, INFINITY, INFINITY);
-        maxBound = Vector(-INFINITY, -INFINITY, -INFINITY);
-
-        for (int i = 0; i < nBodies; i++)
-        {
-            Vector pos = h_bodies[i].position;
-
-            minBound.x = std::min(minBound.x, pos.x);
-            minBound.y = std::min(minBound.y, pos.y);
-            minBound.z = std::min(minBound.z, pos.z);
-
-            maxBound.x = std::max(maxBound.x, pos.x);
-            maxBound.y = std::max(maxBound.y, pos.y);
-            maxBound.z = std::max(maxBound.z, pos.z);
-        }
-
-        double padding = std::max(1.0e10, (maxBound.x - minBound.x) * 0.01);
-        minBound.x -= padding;
-        minBound.y -= padding;
-        minBound.z -= padding;
-        maxBound.x += padding;
-        maxBound.y += padding;
-        maxBound.z += padding;
+        // Use fixed domain bounds for periodic boundary conditions
+        minBound = Vector(0.0, 0.0, 0.0);
+        maxBound = Vector(g_domainSize, g_domainSize, g_domainSize);
     }
 
     void orderBodiesBySFC()
@@ -744,20 +786,21 @@ private:
     void initializeDistribution(BodyDistribution dist, MassDistribution massDist, unsigned int seed)
     {
         std::mt19937 gen(seed);
-        std::uniform_real_distribution<double> pos_dist(-MAX_DIST, MAX_DIST);
+        // Use domain-relative distributions for periodic boundaries
+        std::uniform_real_distribution<double> pos_dist(0.0, g_domainSize);
         std::uniform_real_distribution<double> vel_dist(-1.0e3, 1.0e3);
-        std::normal_distribution<double> normal_pos_dist(0.0, MAX_DIST / 2.0);
+        std::normal_distribution<double> normal_pos_dist(g_domainSize * 0.5, g_domainSize * 0.25);
         std::normal_distribution<double> normal_vel_dist(0.0, 5.0e2);
 
         for (int i = 0; i < nBodies; i++)
         {
             if (massDist == MassDistribution::UNIFORM)
             {
-
+                // Uniform distribution within the domain [0, L]
                 h_bodies[i].position = Vector(
-                    CENTERX + pos_dist(gen),
-                    CENTERY + pos_dist(gen),
-                    CENTERZ + pos_dist(gen));
+                    pos_dist(gen),
+                    pos_dist(gen),
+                    pos_dist(gen));
 
                 h_bodies[i].velocity = Vector(
                     vel_dist(gen),
@@ -766,17 +809,20 @@ private:
             }
             else
             {
-
+                // Normal distribution centered in the domain
                 h_bodies[i].position = Vector(
-                    CENTERX + normal_pos_dist(gen),
-                    CENTERY + normal_pos_dist(gen),
-                    CENTERZ + normal_pos_dist(gen));
+                    normal_pos_dist(gen),
+                    normal_pos_dist(gen),
+                    normal_pos_dist(gen));
 
                 h_bodies[i].velocity = Vector(
                     normal_vel_dist(gen),
                     normal_vel_dist(gen),
                     normal_vel_dist(gen));
             }
+
+            // Ensure positions are within domain bounds [0, L)
+            h_bodies[i].position = applyPeriodicPosition(h_bodies[i].position, g_domainSize);
 
             h_bodies[i].mass = 1.0;
             h_bodies[i].radius = pow(h_bodies[i].mass / EARTH_MASS, 1.0 / 3.0) * (EARTH_DIA / 2.0);
@@ -785,9 +831,74 @@ private:
         }
     }
 
-    void calculateEnergies();
-    void initializeEnergyData();
-    void cleanupEnergyData();
+    void calculateEnergies()
+    {
+        cudaDeviceSynchronize();
+
+        CudaTimer timer(metrics.energyCalculationTimeMs);
+
+        CHECK_CUDA_ERROR(cudaMemset(d_potentialEnergy, 0, sizeof(double)));
+        CHECK_CUDA_ERROR(cudaMemset(d_kineticEnergy, 0, sizeof(double)));
+
+        int blockSize = g_blockSize;
+
+        blockSize = (blockSize / 32) * 32;
+        if (blockSize < 32)
+            blockSize = 32;
+        if (blockSize > 1024)
+            blockSize = 1024;
+
+        int gridSize = (nBodies + blockSize - 1) / blockSize;
+        if (gridSize < 1)
+            gridSize = 1;
+
+        size_t sharedMemSize = 2 * blockSize * sizeof(double);
+
+        CUDA_KERNEL_CALL(CalculateEnergiesKernel, gridSize, blockSize, sharedMemSize, 0,
+                         d_bodies, nBodies, d_potentialEnergy, d_kineticEnergy, g_domainSize);
+
+        CHECK_CUDA_ERROR(cudaMemcpy(h_potentialEnergy, d_potentialEnergy, sizeof(double), cudaMemcpyDeviceToHost));
+        CHECK_CUDA_ERROR(cudaMemcpy(h_kineticEnergy, d_kineticEnergy, sizeof(double), cudaMemcpyDeviceToHost));
+
+        potentialEnergy = *h_potentialEnergy;
+        kineticEnergy = *h_kineticEnergy;
+    }
+
+    void initializeEnergyData()
+    {
+        h_potentialEnergy = new double[1];
+        h_kineticEnergy = new double[1];
+
+        CHECK_CUDA_ERROR(cudaMalloc((void **)&d_potentialEnergy, sizeof(double)));
+        CHECK_CUDA_ERROR(cudaMalloc((void **)&d_kineticEnergy, sizeof(double)));
+    }
+
+    void cleanupEnergyData()
+    {
+        if (h_potentialEnergy != nullptr)
+        {
+            delete[] h_potentialEnergy;
+            h_potentialEnergy = nullptr;
+        }
+
+        if (h_kineticEnergy != nullptr)
+        {
+            delete[] h_kineticEnergy;
+            h_kineticEnergy = nullptr;
+        }
+
+        if (d_potentialEnergy != nullptr)
+        {
+            cudaFree(d_potentialEnergy);
+            d_potentialEnergy = nullptr;
+        }
+
+        if (d_kineticEnergy != nullptr)
+        {
+            cudaFree(d_kineticEnergy);
+            d_kineticEnergy = nullptr;
+        }
+    }
 
 public:
     SFCDirectSumGPU(int numBodies, bool enableSFC = true, int reorderFreq = 10, sfc::CurveType type = sfc::CurveType::MORTON, bool dynamicReordering = true)
@@ -817,7 +928,7 @@ public:
             sorter = nullptr;
         }
 
-        initializeDistribution(BodyDistribution::RANDOM, MassDistribution::UNIFORM);
+        initializeDistribution(BodyDistribution::RANDOM, MassDistribution::UNIFORM, 42);
 
         CHECK_CUDA_ERROR(cudaMemcpy(d_bodies, h_bodies, nBodies * sizeof(Body), cudaMemcpyHostToDevice));
 
@@ -878,43 +989,46 @@ public:
         int gridSize = (nBodies + blockSize - 1) / blockSize;
 
         size_t sharedMemSize = blockSize * sizeof(Vector) + blockSize * sizeof(double);
-        SFCDirectSumForceKernel<<<gridSize, blockSize, sharedMemSize>>>(d_bodies, d_orderedIndices, useSFC, nBodies);
+        SFCDirectSumForceKernel<<<gridSize, blockSize, sharedMemSize>>>(d_bodies, d_orderedIndices, useSFC, nBodies, g_domainSize);
         CHECK_LAST_CUDA_ERROR();
     }
 
     void update()
     {
-        CudaTimer timer(metrics.totalTimeMs);
-
-        bool shouldReorder = false;
-        if (useSFC)
         {
-            if (useDynamicReordering)
-            {
+            CudaTimer timer(metrics.totalTimeMs);
 
-                shouldReorder = reorderingStrategy.shouldReorder(metrics.forceTimeMs, metrics.reorderTimeMs);
+            bool shouldReorder = false;
+            if (useSFC)
+            {
+                if (useDynamicReordering)
+                {
+
+                    shouldReorder = reorderingStrategy.shouldReorder(metrics.forceTimeMs, metrics.reorderTimeMs);
+                }
+                else
+                {
+
+                    shouldReorder = (iterationCounter >= reorderFrequency);
+                }
+
+                if (shouldReorder)
+                {
+                    orderBodiesBySFC();
+                    iterationCounter = 0;
+                }
             }
-            else
-            {
 
-                shouldReorder = (iterationCounter >= reorderFrequency);
-            }
+            computeForces();
+            iterationCounter++;
 
-            if (shouldReorder)
+            if (useSFC && useDynamicReordering)
             {
-                orderBodiesBySFC();
-                iterationCounter = 0;
+                reorderingStrategy.updateMetrics(shouldReorder ? metrics.reorderTimeMs : 0.0);
             }
         }
 
-        computeForces();
-        iterationCounter++;
-
-        if (useSFC && useDynamicReordering)
-        {
-            reorderingStrategy.updateMetrics(shouldReorder ? metrics.reorderTimeMs : 0.0, metrics.forceTimeMs);
-        }
-
+        // Calcular energías por separado (no afecta el tiempo de simulación)
         calculateEnergies();
     }
 
@@ -954,9 +1068,6 @@ public:
                 printPerformance();
             }
         }
-
-        printf("Simulation completed in %.2f ms (avg %.2f ms per iteration)\n",
-               totalTime, totalTime / numIterations);
     }
 
     int getOptimalReorderFrequency() const
@@ -984,84 +1095,7 @@ public:
     double getKineticEnergyAvg() const { return kineticEnergyAvg; }
     double getTotalEnergyAvg() const { return totalEnergyAvg; }
 
-    void calculateEnergies()
-    {
-        Body *d_bodies = bodySystem->getDeviceBodies();
-        int nBodies = bodySystem->getNumBodies();
 
-        if (d_bodies == nullptr)
-        {
-            std::cerr << "Error: Device bodies not initialized in calculateEnergies" << std::endl;
-            return;
-        }
-
-        cudaDeviceSynchronize();
-
-        CudaTimer timer(metrics.energyCalculationTimeMs);
-
-        CHECK_CUDA_ERROR(cudaMemset(d_potentialEnergy, 0, sizeof(double)));
-        CHECK_CUDA_ERROR(cudaMemset(d_kineticEnergy, 0, sizeof(double)));
-
-        int blockSize = g_blockSize;
-
-        blockSize = (blockSize / 32) * 32;
-        if (blockSize < 32)
-            blockSize = 32;
-        if (blockSize > 1024)
-            blockSize = 1024;
-
-        int gridSize = (nBodies + blockSize - 1) / blockSize;
-        if (gridSize < 1)
-            gridSize = 1;
-
-        size_t sharedMemSize = 2 * blockSize * sizeof(double);
-
-        CUDA_KERNEL_CALL(CalculateEnergiesKernel, gridSize, blockSize, sharedMemSize, 0,
-                         d_bodies, nBodies, d_potentialEnergy, d_kineticEnergy);
-
-        CHECK_CUDA_ERROR(cudaMemcpy(h_potentialEnergy, d_potentialEnergy, sizeof(double), cudaMemcpyDeviceToHost));
-        CHECK_CUDA_ERROR(cudaMemcpy(h_kineticEnergy, d_kineticEnergy, sizeof(double), cudaMemcpyDeviceToHost));
-
-        potentialEnergy = *h_potentialEnergy;
-        kineticEnergy = *h_kineticEnergy;
-    }
-
-    void initializeEnergyData()
-    {
-
-        h_potentialEnergy = new double[1];
-        h_kineticEnergy = new double[1];
-
-        CHECK_CUDA_ERROR(cudaMalloc((void **)&d_potentialEnergy, sizeof(double)));
-        CHECK_CUDA_ERROR(cudaMalloc((void **)&d_kineticEnergy, sizeof(double)));
-    }
-
-    void cleanupEnergyData()
-    {
-        if (h_potentialEnergy != nullptr)
-        {
-            delete[] h_potentialEnergy;
-            h_potentialEnergy = nullptr;
-        }
-
-        if (h_kineticEnergy != nullptr)
-        {
-            delete[] h_kineticEnergy;
-            h_kineticEnergy = nullptr;
-        }
-
-        if (d_potentialEnergy != nullptr)
-        {
-            cudaFree(d_potentialEnergy);
-            d_potentialEnergy = nullptr;
-        }
-
-        if (d_kineticEnergy != nullptr)
-        {
-            cudaFree(d_kineticEnergy);
-            d_kineticEnergy = nullptr;
-        }
-    }
 };
 
 bool dirExists(const std::string &dirName)
@@ -1106,14 +1140,14 @@ int main(int argc, char **argv)
     // Add arguments with help messages and default values
     parser.add_argument("n", "Number of bodies", 10000);
     parser.add_flag("nosfc", "Disable Space-Filling Curve ordering");
-    parser.add_argument("freq", "Reordering frequency", 10);
+    parser.add_argument("freq", "Reordering frequency for fixed mode", 10);
     parser.add_argument("dist", "Body distribution (galaxy, solar, uniform, random)", std::string("galaxy"));
     parser.add_argument("mass", "Mass distribution (uniform, normal)", std::string("normal"));
     parser.add_argument("seed", "Random seed", 42);
     parser.add_argument("curve", "SFC curve type (morton, hilbert)", std::string("morton"));
-    parser.add_argument("iter", "Number of iterations", 100);
+    parser.add_argument("s", "Number of iterations", 100);
     parser.add_argument("block", "CUDA block size", DEFAULT_BLOCK_SIZE);
-    parser.add_flag("dynamic-reordering", "Use dynamic reordering");
+    parser.add_argument("l", "Domain size L for periodic boundary conditions", DEFAULT_DOMAIN_SIZE);
     
     // Parse command line arguments
     try {
@@ -1156,11 +1190,13 @@ int main(int argc, char **argv)
         curveType = sfc::CurveType::HILBERT;
     }
     
-    int numIterations = parser.get<int>("iter");
+    int numIterations = parser.get<int>("s");
     int blockSize = parser.get<int>("block");
-    bool useDynamicReordering = parser.get<bool>("dynamic-reordering");
+    bool useDynamicReordering = true; // Always use dynamic reordering
+    double domainSize = parser.get<double>("l");
 
     g_blockSize = blockSize;
+    g_domainSize = domainSize;
 
     int deviceCount;
     cudaGetDeviceCount(&deviceCount);
@@ -1173,6 +1209,14 @@ int main(int argc, char **argv)
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, 0);
     std::cout << "Using GPU: " << deviceProp.name << std::endl;
+    std::cout << "DirectSum GPU Simulation" << std::endl;
+    std::cout << "Bodies: " << nBodies << std::endl;
+    std::cout << "Iterations: " << numIterations << std::endl;
+    std::cout << "Domain size (periodic boundaries): " << std::scientific << domainSize << std::endl;
+    std::cout << "Using SFC: " << (useSFC ? "Yes" : "No") << std::endl;
+    if (useSFC) {
+        std::cout << "Curve type: " << (curveType == sfc::CurveType::HILBERT ? "HILBERT" : "MORTON") << std::endl;
+    }
 
     SFCDirectSumGPU simulation(
         nBodies,

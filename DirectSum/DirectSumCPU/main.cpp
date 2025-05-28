@@ -28,6 +28,46 @@ constexpr double CENTERY = 0.0;
 constexpr double CENTERZ = 0.0;
 constexpr double EARTH_MASS = 5.972e24;
 constexpr double EARTH_DIA = 12742000.0;
+constexpr double DEFAULT_DOMAIN_SIZE = 1.0e6; // Default domain size for periodic boundaries
+
+// Global domain size for periodic boundary conditions
+double g_domainSize = DEFAULT_DOMAIN_SIZE;
+
+// Periodic boundary condition functions
+Vector applyPeriodicBoundary(Vector rij, double domainSize)
+{
+    Vector result = rij;
+    double halfDomain = domainSize * 0.5;
+    
+    // Apply minimum image convention
+    if (result.x > halfDomain) result.x -= domainSize;
+    else if (result.x < -halfDomain) result.x += domainSize;
+    
+    if (result.y > halfDomain) result.y -= domainSize;
+    else if (result.y < -halfDomain) result.y += domainSize;
+    
+    if (result.z > halfDomain) result.z -= domainSize;
+    else if (result.z < -halfDomain) result.z += domainSize;
+    
+    return result;
+}
+
+Vector applyPeriodicPosition(Vector position, double domainSize)
+{
+    Vector result = position;
+    
+    // Wrap positions to stay within [0, L)
+    result.x = fmod(result.x + domainSize, domainSize);
+    if (result.x < 0) result.x += domainSize;
+    
+    result.y = fmod(result.y + domainSize, domainSize);
+    if (result.y < 0) result.y += domainSize;
+    
+    result.z = fmod(result.z + domainSize, domainSize);
+    if (result.z < 0) result.z += domainSize;
+    
+    return result;
+}
 
 // Enums
 enum class MassDistribution
@@ -280,19 +320,21 @@ public:
     void initRandomBodies(unsigned int seed, MassDistribution massDist)
     {
         std::mt19937 gen(seed);
-        std::uniform_real_distribution<double> pos_dist(-MAX_DIST, MAX_DIST);
+        // Use domain-relative distributions for periodic boundaries
+        std::uniform_real_distribution<double> pos_dist(0.0, g_domainSize);
         std::uniform_real_distribution<double> vel_dist(-1.0e3, 1.0e3);
-        std::normal_distribution<double> normal_pos_dist(0.0, MAX_DIST / 2.0);
+        std::normal_distribution<double> normal_pos_dist(g_domainSize * 0.5, g_domainSize * 0.25);
         std::normal_distribution<double> normal_vel_dist(0.0, 5.0e2);
 
         for (int i = 0; i < nBodies; i++)
         {
             if (massDist == MassDistribution::UNIFORM)
             {
+                // Uniform distribution within the domain [0, L]
                 bodies[i].position = Vector(
-                    CENTERX + pos_dist(gen),
-                    CENTERY + pos_dist(gen),
-                    CENTERZ + pos_dist(gen));
+                    pos_dist(gen),
+                    pos_dist(gen),
+                    pos_dist(gen));
 
                 bodies[i].velocity = Vector(
                     vel_dist(gen),
@@ -301,16 +343,20 @@ public:
             }
             else
             {
+                // Normal distribution centered in the domain
                 bodies[i].position = Vector(
-                    CENTERX + normal_pos_dist(gen),
-                    CENTERY + normal_pos_dist(gen),
-                    CENTERZ + normal_pos_dist(gen));
+                    normal_pos_dist(gen),
+                    normal_pos_dist(gen),
+                    normal_pos_dist(gen));
 
                 bodies[i].velocity = Vector(
                     normal_vel_dist(gen),
                     normal_vel_dist(gen),
                     normal_vel_dist(gen));
             }
+
+            // Ensure positions are within domain bounds [0, L)
+            bodies[i].position = applyPeriodicPosition(bodies[i].position, g_domainSize);
 
             bodies[i].mass = 1.0;
             bodies[i].radius = pow(bodies[i].mass / EARTH_MASS, 1.0 / 3.0) * (EARTH_DIA / 2.0);
@@ -321,73 +367,9 @@ public:
 
     void updateBoundingBox()
     {
-        if (useOpenMP)
-        {
-            std::vector<Vector> localMin(numThreads, Vector(std::numeric_limits<double>::max(),
-                                                          std::numeric_limits<double>::max(),
-                                                          std::numeric_limits<double>::max()));
-            std::vector<Vector> localMax(numThreads, Vector(std::numeric_limits<double>::lowest(),
-                                                          std::numeric_limits<double>::lowest(),
-                                                          std::numeric_limits<double>::lowest()));
-
-#pragma omp parallel
-            {
-                int tid = omp_get_thread_num();
-#pragma omp for
-                for (int i = 0; i < nBodies; i++)
-                {
-                    const Vector &pos = bodies[i].position;
-                    localMin[tid].x = std::min(localMin[tid].x, pos.x);
-                    localMin[tid].y = std::min(localMin[tid].y, pos.y);
-                    localMin[tid].z = std::min(localMin[tid].z, pos.z);
-                    localMax[tid].x = std::max(localMax[tid].x, pos.x);
-                    localMax[tid].y = std::max(localMax[tid].y, pos.y);
-                    localMax[tid].z = std::max(localMax[tid].z, pos.z);
-                }
-            }
-
-            minBound = localMin[0];
-            maxBound = localMax[0];
-
-            for (int i = 1; i < numThreads; i++)
-            {
-                minBound.x = std::min(minBound.x, localMin[i].x);
-                minBound.y = std::min(minBound.y, localMin[i].y);
-                minBound.z = std::min(minBound.z, localMin[i].z);
-                maxBound.x = std::max(maxBound.x, localMax[i].x);
-                maxBound.y = std::max(maxBound.y, localMax[i].y);
-                maxBound.z = std::max(maxBound.z, localMax[i].z);
-            }
-        }
-        else
-        {
-            minBound = Vector(std::numeric_limits<double>::max(),
-                           std::numeric_limits<double>::max(),
-                           std::numeric_limits<double>::max());
-            maxBound = Vector(std::numeric_limits<double>::lowest(),
-                           std::numeric_limits<double>::lowest(),
-                           std::numeric_limits<double>::lowest());
-
-            for (int i = 0; i < nBodies; i++)
-            {
-                const Vector &pos = bodies[i].position;
-                minBound.x = std::min(minBound.x, pos.x);
-                minBound.y = std::min(minBound.y, pos.y);
-                minBound.z = std::min(minBound.z, pos.z);
-                maxBound.x = std::max(maxBound.x, pos.x);
-                maxBound.y = std::max(maxBound.y, pos.y);
-                maxBound.z = std::max(maxBound.z, pos.z);
-            }
-        }
-
-        // Agregar un pequeño margen para evitar problemas numéricos
-        double padding = std::max(1.0e-10, (maxBound.x - minBound.x) * 0.01);
-        minBound.x -= padding;
-        minBound.y -= padding;
-        minBound.z -= padding;
-        maxBound.x += padding;
-        maxBound.y += padding;
-        maxBound.z += padding;
+        // Use fixed domain bounds for periodic boundary conditions
+        minBound = Vector(0.0, 0.0, 0.0);
+        maxBound = Vector(g_domainSize, g_domainSize, g_domainSize);
     }
 
     void computeBoundingBox()
@@ -459,6 +441,10 @@ public:
                         continue;
 
                     Vector diff = bodies[j].position - bodies[i].position;
+                    
+                    // Apply periodic boundary conditions
+                    diff = applyPeriodicBoundary(diff, g_domainSize);
+                    
                     double distSquared = diff.lengthSquared();
                     double dist = sqrt(distSquared);
 
@@ -490,6 +476,10 @@ public:
                         continue;
 
                     Vector diff = bodies[j].position - bodies[i].position;
+                    
+                    // Apply periodic boundary conditions
+                    diff = applyPeriodicBoundary(diff, g_domainSize);
+                    
                     double distSquared = diff.lengthSquared();
                     double dist = sqrt(distSquared);
 
@@ -529,6 +519,10 @@ public:
                     for (int j = i + 1; j < nBodies; j++)
                     {
                         Vector diff = bodies[i].position - bodies[j].position;
+                        
+                        // Apply periodic boundary conditions
+                        diff = applyPeriodicBoundary(diff, g_domainSize);
+                        
                         double dist = diff.length();
                         if (dist > 0)
                         {
@@ -552,6 +546,10 @@ public:
                 for (int j = i + 1; j < nBodies; j++)
                 {
                     Vector diff = bodies[i].position - bodies[j].position;
+                    
+                    // Apply periodic boundary conditions
+                    diff = applyPeriodicBoundary(diff, g_domainSize);
+                    
                     double dist = diff.length();
                     if (dist > 0)
                     {
@@ -584,6 +582,9 @@ public:
                 {
                     bodies[i].velocity = bodies[i].velocity + bodies[i].acceleration * DT;
                     bodies[i].position = bodies[i].position + bodies[i].velocity * DT;
+                    
+                    // Apply periodic boundary conditions to positions
+                    bodies[i].position = applyPeriodicPosition(bodies[i].position, g_domainSize);
                 }
             }
         }
@@ -595,11 +596,12 @@ public:
                 {
                     bodies[i].velocity = bodies[i].velocity + bodies[i].acceleration * DT;
                     bodies[i].position = bodies[i].position + bodies[i].velocity * DT;
+                    
+                    // Apply periodic boundary conditions to positions
+                    bodies[i].position = applyPeriodicPosition(bodies[i].position, g_domainSize);
                 }
             }
         }
-
-        calculateEnergies();
 
         auto end = std::chrono::high_resolution_clock::now();
         totalTime += std::chrono::duration<double, std::milli>(end - start).count();
@@ -648,38 +650,13 @@ public:
         {
             auto stepStart = std::chrono::high_resolution_clock::now();
             
-            reorderBodies();
-            computeForces();
-            
-            // Actualizar posiciones y velocidades
-            if (useOpenMP)
-            {
-#pragma omp parallel for
-                for (int i = 0; i < nBodies; ++i)
-                {
-                    if (bodies[i].isDynamic)
-                    {
-                        bodies[i].velocity = bodies[i].velocity + bodies[i].acceleration * DT;
-                        bodies[i].position = bodies[i].position + bodies[i].velocity * DT;
-                    }
-                }
-            }
-            else
-            {
-                for (int i = 0; i < nBodies; ++i)
-                {
-                    if (bodies[i].isDynamic)
-                    {
-                        bodies[i].velocity = bodies[i].velocity + bodies[i].acceleration * DT;
-                        bodies[i].position = bodies[i].position + bodies[i].velocity * DT;
-                    }
-                }
-            }
+            update();
 
-            calculateEnergies();
-            
             auto stepEnd = std::chrono::high_resolution_clock::now();
             double stepTime = std::chrono::duration<double, std::milli>(stepEnd - stepStart).count();
+            
+            // Calcular energías por separado (no afecta el tiempo de simulación)
+            calculateEnergies();
             
             totalRunTime += stepTime;
             totalForceTime += forceCalculationTime;
@@ -689,8 +666,6 @@ public:
             maxTime = std::max(maxTime, (float)stepTime);
             totalPotentialEnergy += potentialEnergy;
             totalKineticEnergy += kineticEnergy;
-            
-            iterationCounter++;
         }
 
         auto endTime = std::chrono::high_resolution_clock::now();
@@ -790,11 +765,14 @@ int main(int argc, char *argv[])
     // Add arguments with help messages and default values
     parser.add_argument("n", "Number of bodies", 1000);
     parser.add_flag("nosfc", "Disable Space-Filling Curve ordering");
-    parser.add_argument("s", "Number of simulation steps", 100);
-    parser.add_argument("t", "Number of threads (0 = auto)", 0);
-    parser.add_argument("curve", "SFC curve type (morton, hilbert)", std::string("morton"));
+    parser.add_argument("freq", "Reordering frequency for fixed mode", 10);
+    parser.add_argument("dist", "Body distribution (galaxy, solar, uniform, random)", std::string("galaxy"));
     parser.add_argument("mass", "Mass distribution (uniform, normal)", std::string("normal"));
     parser.add_argument("seed", "Random seed", 42);
+    parser.add_argument("curve", "SFC curve type (morton, hilbert)", std::string("morton"));
+    parser.add_argument("s", "Number of simulation steps", 100);
+    parser.add_argument("t", "Number of threads (0 = auto)", 0);
+    parser.add_argument("l", "Domain size L for periodic boundary conditions", DEFAULT_DOMAIN_SIZE);
     
     // Parse command line arguments
     try {
@@ -810,6 +788,19 @@ int main(int argc, char *argv[])
     int steps = parser.get<int>("s");
     int threads = parser.get<int>("t");
     bool useSFC = !parser.get<bool>("nosfc");
+    int reorderFreq = parser.get<int>("freq");
+    
+    // Parse distribution type
+    std::string distStr = parser.get<std::string>("dist");
+    BodyDistribution bodyDist = BodyDistribution::GALAXY;
+    if (distStr == "solar") {
+        bodyDist = BodyDistribution::SOLAR_SYSTEM;
+    } else if (distStr == "uniform") {
+        bodyDist = BodyDistribution::RANDOM_UNIFORM;
+    } else if (distStr == "random") {
+        bodyDist = BodyDistribution::RANDOM_UNIFORM;
+    }
+    
     std::string curveStr = parser.get<std::string>("curve");
     SFCCurveType curveType = (curveStr == "hilbert") ? SFCCurveType::HILBERT : SFCCurveType::MORTON;
     
@@ -821,6 +812,20 @@ int main(int argc, char *argv[])
     }
     
     unsigned int seed = parser.get<int>("seed");
+    double domainSize = parser.get<double>("l");
+    
+    // Set global domain size
+    g_domainSize = domainSize;
+    
+    std::cout << "DirectSum CPU Simulation" << std::endl;
+    std::cout << "Bodies: " << nBodies << std::endl;
+    std::cout << "Steps: " << steps << std::endl;
+    std::cout << "Threads: " << (threads > 0 ? threads : omp_get_max_threads()) << std::endl;
+    std::cout << "Domain size (periodic boundaries): " << std::scientific << domainSize << std::endl;
+    std::cout << "Using SFC: " << (useSFC ? "Yes" : "No") << std::endl;
+    if (useSFC) {
+        std::cout << "Curve type: " << (curveType == SFCCurveType::HILBERT ? "HILBERT" : "MORTON") << std::endl;
+    }
     
     DirectSum simulation(
         nBodies,

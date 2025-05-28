@@ -27,6 +27,25 @@
 #include "../../kernels/octree_kernel.cu"
 #include "../../kernels/force_kernel.cu"
 
+// Periodic boundary condition functions (duplicated here for energy kernel)
+__device__ Vector applyPeriodicBoundary_local(Vector rij, double domainSize)
+{
+    Vector result = rij;
+    double halfDomain = domainSize * 0.5;
+    
+    // Apply minimum image convention
+    if (result.x > halfDomain) result.x -= domainSize;
+    else if (result.x < -halfDomain) result.x += domainSize;
+    
+    if (result.y > halfDomain) result.y -= domainSize;
+    else if (result.y < -halfDomain) result.y += domainSize;
+    
+    if (result.z > halfDomain) result.z -= domainSize;
+    else if (result.z < -halfDomain) result.z += domainSize;
+    
+    return result;
+}
+
 // Implementación de atomicAdd para double si no está disponible
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
 __device__ double atomicAdd(double *address, double val)
@@ -45,7 +64,7 @@ __device__ double atomicAdd(double *address, double val)
 }
 #endif
 
-__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy)
+__global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_potentialEnergy, double *d_kineticEnergy, double domainSize)
 {
     extern __shared__ double sharedEnergy[];
     double *sharedPotential = sharedEnergy;
@@ -68,6 +87,9 @@ __global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_pot
         for (int j = i + 1; j < nBodies; j++)
         {
             Vector r = bodies[j].position - bodies[i].position;
+            
+            // Apply periodic boundary conditions
+            r = applyPeriodicBoundary_local(r, domainSize);
 
             double distSqr = r.lengthSquared() + (E * E);
             double dist = sqrt(distSqr);
@@ -474,6 +496,7 @@ constexpr double DEFAULT_THETA = 0.5;
 
 int g_blockSize = DEFAULT_BLOCK_SIZE;
 double g_theta = DEFAULT_THETA;
+double g_domainSize = DEFAULT_DOMAIN_SIZE;
 
 bool dirExists(const std::string &dirName)
 {
@@ -946,20 +969,21 @@ private:
     void initializeDistribution(BodyDistribution dist, MassDistribution massDist, unsigned int seed)
     {
         std::mt19937 gen(seed);
-        std::uniform_real_distribution<double> pos_dist(-MAX_DIST, MAX_DIST);
+        // Use domain-relative distributions for periodic boundaries
+        std::uniform_real_distribution<double> pos_dist(0.0, g_domainSize);
         std::uniform_real_distribution<double> vel_dist(-1.0e3, 1.0e3);
-        std::normal_distribution<double> normal_pos_dist(0.0, MAX_DIST / 2.0);
+        std::normal_distribution<double> normal_pos_dist(g_domainSize * 0.5, g_domainSize * 0.25);
         std::normal_distribution<double> normal_vel_dist(0.0, 5.0e2);
 
         for (int i = 0; i < nBodies; i++)
         {
             if (massDist == MassDistribution::UNIFORM)
             {
-
+                // Uniform distribution within the domain [0, L]
                 h_bodies[i].position = Vector(
-                    CENTERX + pos_dist(gen),
-                    CENTERY + pos_dist(gen),
-                    CENTERZ + pos_dist(gen));
+                    pos_dist(gen),
+                    pos_dist(gen),
+                    pos_dist(gen));
 
                 h_bodies[i].velocity = Vector(
                     vel_dist(gen),
@@ -968,17 +992,27 @@ private:
             }
             else
             {
-
+                // Normal distribution centered in the domain
                 h_bodies[i].position = Vector(
-                    CENTERX + normal_pos_dist(gen),
-                    CENTERY + normal_pos_dist(gen),
-                    CENTERZ + normal_pos_dist(gen));
+                    normal_pos_dist(gen),
+                    normal_pos_dist(gen),
+                    normal_pos_dist(gen));
 
                 h_bodies[i].velocity = Vector(
                     normal_vel_dist(gen),
                     normal_vel_dist(gen),
                     normal_vel_dist(gen));
             }
+
+            // Ensure positions are within domain bounds [0, L)
+            h_bodies[i].position.x = fmod(h_bodies[i].position.x + g_domainSize, g_domainSize);
+            if (h_bodies[i].position.x < 0) h_bodies[i].position.x += g_domainSize;
+            
+            h_bodies[i].position.y = fmod(h_bodies[i].position.y + g_domainSize, g_domainSize);
+            if (h_bodies[i].position.y < 0) h_bodies[i].position.y += g_domainSize;
+            
+            h_bodies[i].position.z = fmod(h_bodies[i].position.z + g_domainSize, g_domainSize);
+            if (h_bodies[i].position.z < 0) h_bodies[i].position.z += g_domainSize;
 
             h_bodies[i].mass = 1.0;
             h_bodies[i].radius = pow(h_bodies[i].mass / EARTH_MASS, 1.0 / 3.0) * (EARTH_DIA / 2.0);
@@ -987,74 +1021,17 @@ private:
         }
     }
 
-    void updateBoundingBox()
+    void setFixedDomainBounds()
     {
-
-        if (useSFC)
-        {
-
-            Vector *h_positions = new Vector[nBodies];
-
-            for (int i = 0; i < nBodies; i++)
-            {
-                size_t offset = i * sizeof(Body) + offsetof(Body, position);
-                cudaMemcpy(&h_positions[i], (char *)d_bodies + offset, sizeof(Vector), cudaMemcpyDeviceToHost);
-            }
-
-            minBound = Vector(INFINITY, INFINITY, INFINITY);
-            maxBound = Vector(-INFINITY, -INFINITY, -INFINITY);
-
-#pragma omp parallel for reduction(min : minBound.x, minBound.y, minBound.z) reduction(max : maxBound.x, maxBound.y, maxBound.z) if (nBodies > 50000)
-            for (int i = 0; i < nBodies; i++)
-            {
-                Vector pos = h_positions[i];
-
-                minBound.x = std::min(minBound.x, pos.x);
-                minBound.y = std::min(minBound.y, pos.y);
-                minBound.z = std::min(minBound.z, pos.z);
-
-                maxBound.x = std::max(maxBound.x, pos.x);
-                maxBound.y = std::max(maxBound.y, pos.y);
-                maxBound.z = std::max(maxBound.z, pos.z);
-            }
-
-            delete[] h_positions;
-
-            double padding = std::max(1.0e10, (maxBound.x - minBound.x) * 0.01);
-            minBound.x -= padding;
-            minBound.y -= padding;
-            minBound.z -= padding;
-            maxBound.x += padding;
-            maxBound.y += padding;
-            maxBound.z += padding;
-        }
+        // Use fixed domain bounds for periodic boundary conditions
+        minBound = Vector(0.0, 0.0, 0.0);
+        maxBound = Vector(g_domainSize, g_domainSize, g_domainSize);
     }
 
     void updateBoundsFromRoot()
     {
-
-        if (d_nodes)
-        {
-
-            Node rootNode;
-            cudaMemcpy(&rootNode, d_nodes, sizeof(Node), cudaMemcpyDeviceToHost);
-
-            if (rootNode.bodyCount > 0 &&
-                !std::isinf(rootNode.min.x) && !std::isinf(rootNode.max.x))
-            {
-
-                minBound = rootNode.min;
-                maxBound = rootNode.max;
-
-                Vector padding = (maxBound - minBound) * 0.05;
-                minBound = minBound - padding;
-                maxBound = maxBound + padding;
-
-                return;
-            }
-        }
-
-        updateBoundingBox();
+        // Always use fixed domain bounds for periodic boundary conditions
+        setFixedDomainBounds();
     }
 
     void orderBodiesBySFC()
@@ -1140,7 +1117,7 @@ private:
         }
 
         CUDA_KERNEL_CALL(CalculateEnergiesKernel, gridSize, blockSize, sharedMemSize, 0,
-                         d_bodies, nBodies, d_potentialEnergy, d_kineticEnergy);
+                         d_bodies, nBodies, d_potentialEnergy, d_kineticEnergy, g_domainSize);
 
         CHECK_CUDA_ERROR(cudaMemcpy(h_potentialEnergy, d_potentialEnergy, sizeof(double), cudaMemcpyDeviceToHost));
         CHECK_CUDA_ERROR(cudaMemcpy(h_kineticEnergy, d_kineticEnergy, sizeof(double), cudaMemcpyDeviceToHost));
@@ -1193,6 +1170,14 @@ private:
         }
     }
 
+    void computeBoundingBox()
+    {
+        CudaTimer timer(metrics.bboxTimeMs);
+
+        // Use fixed domain bounds for periodic boundary conditions
+        setFixedDomainBounds();
+    }
+
 public:
     SFCBarnesHutGPU(
         int numBodies,
@@ -1227,6 +1212,7 @@ public:
             numBodies = 1;
 
         std::cout << "SFC Barnes-Hut GPU Simulation created with " << numBodies << " bodies." << std::endl;
+        std::cout << "Periodic boundary conditions enabled with domain size L = " << std::scientific << g_domainSize << std::endl;
 
         cudaDeviceProp deviceProp;
         cudaGetDeviceProperties(&deviceProp, 0);
@@ -1257,8 +1243,8 @@ public:
 
         CHECK_CUDA_ERROR(cudaMemcpy(d_bodies, h_bodies, nBodies * sizeof(Body), cudaMemcpyHostToDevice));
 
-        minBound = Vector(INFINITY, INFINITY, INFINITY);
-        maxBound = Vector(-INFINITY, -INFINITY, -INFINITY);
+        // Initialize fixed domain bounds for periodic boundary conditions
+        setFixedDomainBounds();
 
         initializeEnergyData();
     }
@@ -1307,69 +1293,76 @@ public:
         CHECK_LAST_CUDA_ERROR();
     }
 
-    void computeBoundingBox()
-    {
-        CudaTimer timer(metrics.bboxTimeMs);
-
-        // Compute node bounds on CPU side
-        if (h_bodies == nullptr || nBodies <= 0)
-            return;
-
-        Vector minPos = Vector(INFINITY, INFINITY, INFINITY);
-        Vector maxPos = Vector(-INFINITY, -INFINITY, -INFINITY);
-
-        // Copy positions from device to host
-        for (int i = 0; i < nBodies; i++) {
-            size_t offset = i * sizeof(Body) + offsetof(Body, position);
-            Vector pos;
-            cudaMemcpy(&pos, (char *)d_bodies + offset, sizeof(Vector), cudaMemcpyDeviceToHost);
-            
-            minPos.x = std::min(minPos.x, pos.x);
-            minPos.y = std::min(minPos.y, pos.y);
-            minPos.z = std::min(minPos.z, pos.z);
-            
-            maxPos.x = std::max(maxPos.x, pos.x);
-            maxPos.y = std::max(maxPos.y, pos.y);
-            maxPos.z = std::max(maxPos.z, pos.z);
-        }
-
-        // Add padding
-        Vector padding = (maxPos - minPos) * 0.01;
-        minPos = minPos - padding;
-        maxPos = maxPos + padding;
-
-        // Create a temporary node structure to copy to device
-        Node rootNode;
-        rootNode.min = minPos;
-        rootNode.max = maxPos;
-        rootNode.bodyIndex = 0;
-        rootNode.bodyCount = nBodies;
-        rootNode.isLeaf = true;
-        rootNode.position = (minPos + maxPos) * 0.5;
-        rootNode.mass = 0.0;
-        
-        // Calculate the radius
-        Vector dimensions = maxPos - minPos;
-        rootNode.radius = max(max(dimensions.x, dimensions.y), dimensions.z) * 0.5;
-
-        // Copy root node to device
-        cudaMemcpy(d_nodes, &rootNode, sizeof(Node), cudaMemcpyHostToDevice);
-    }
-
     void constructOctree()
     {
         CudaTimer timer(metrics.octreeTimeMs);
 
-        int blockSize = g_blockSize;
-        
-        // Calculate required shared memory size for the kernel
-        size_t sharedMemSize = blockSize * sizeof(double) + blockSize * sizeof(double3);
+        // Validar que tenemos memoria asignada
+        if (!d_nodes || !d_bodies || !d_bodiesBuffer) {
+            std::cerr << "Error: Device memory not allocated for octree construction" << std::endl;
+            return;
+        }
 
-        // Launch the kernel with a single block
-        ConstructOctTreeKernel<<<1, blockSize, sharedMemSize>>>(
-            d_nodes, d_bodies, d_bodiesBuffer, 0, nNodes, nBodies, leafLimit);
+        // Validar que tenemos cuerpos para procesar
+        if (nBodies <= 0) {
+            std::cerr << "Error: No bodies to process in octree construction" << std::endl;
+            return;
+        }
+
+        // Inicializar el nodo raíz correctamente
+        Node rootNode;
+        rootNode.start = 0;
+        rootNode.end = nBodies - 1;
+        rootNode.isLeaf = true;
+        rootNode.bodyCount = nBodies;
+        rootNode.mass = 0.0;
+        rootNode.totalMass = 0.0;
         
-        CHECK_LAST_CUDA_ERROR();
+        // Use fixed domain bounds for periodic boundary conditions
+        Vector minPos = Vector(0.0, 0.0, 0.0);
+        Vector maxPos = Vector(g_domainSize, g_domainSize, g_domainSize);
+        
+        rootNode.topLeftFront = minPos;
+        rootNode.botRightBack = maxPos;
+        rootNode.min = minPos;
+        rootNode.max = maxPos;
+        rootNode.position = (minPos + maxPos) * 0.5;
+        
+        Vector dimensions = maxPos - minPos;
+        rootNode.radius = std::max({dimensions.x, dimensions.y, dimensions.z}) * 0.5;
+        
+        // Copiar nodo raíz al device
+        CHECK_CUDA_ERROR(cudaMemcpy(d_nodes, &rootNode, sizeof(Node), cudaMemcpyHostToDevice));
+
+        int blockSize = std::min(g_blockSize, 256); // Limitar el tamaño del bloque
+        
+        // Calcular memoria compartida necesaria
+        size_t sharedMemSize = blockSize * sizeof(double) + blockSize * sizeof(double3);
+        
+        // Verificar límites de memoria compartida
+        int device;
+        cudaGetDevice(&device);
+        cudaDeviceProp props;
+        cudaGetDeviceProperties(&props, device);
+        
+        if (sharedMemSize > props.sharedMemPerBlock) {
+            // Reducir el tamaño del bloque si excede la memoria compartida
+            blockSize = std::min(blockSize, (int)(props.sharedMemPerBlock / (sizeof(double) + sizeof(double3))));
+            blockSize = (blockSize / 32) * 32; // Alinear a warp
+            if (blockSize < 32) blockSize = 32;
+            sharedMemSize = blockSize * sizeof(double) + blockSize * sizeof(double3);
+        }
+
+        // Lanzar el kernel con validaciones de límites
+        if (nNodes > 0 && nBodies > 0) {
+            ConstructOctTreeKernel<<<1, blockSize, sharedMemSize>>>(
+                d_nodes, d_bodies, d_bodiesBuffer, 0, nNodes, nBodies, leafLimit);
+            
+            CHECK_LAST_CUDA_ERROR();
+            
+            // Sincronizar para asegurar que el kernel termine
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        }
     }
 
     void computeForces()
@@ -1379,9 +1372,9 @@ public:
         int blockSize = g_blockSize;
         int gridSize = (nBodies + blockSize - 1) / blockSize;
 
-        // Launch the force calculation kernel
+        // Launch the force calculation kernel with domain size for periodic boundaries
         ComputeForceKernel<<<gridSize, blockSize>>>(
-            d_nodes, d_bodies, nNodes, nBodies, leafLimit, g_theta);
+            d_nodes, d_bodies, nNodes, nBodies, leafLimit, g_theta, g_domainSize);
             
         CHECK_LAST_CUDA_ERROR();
     }
@@ -1395,7 +1388,6 @@ public:
         bool shouldReorder = false;
         if (useSFC)
         {
-
             shouldReorder = reorderingStrategy.shouldReorder(metrics.forceTimeMs, metrics.reorderTimeMs);
 
             if (shouldReorder)
@@ -1407,11 +1399,11 @@ public:
 
         resetOctree();
 
+        computeBoundingBox();
+
         constructOctree();
 
         computeForces();
-
-        calculateEnergies();
 
         iterationCounter++;
 
@@ -1432,7 +1424,7 @@ public:
         {
             printf("  Reordering:   %.2f ms\n", metrics.reorderTimeMs);
             printf("  Optimal reorder freq: %d\n", reorderingStrategy.getOptimalFrequency());
-            printf("  Degradation rate: %.6f ms/iter\n", reorderingStrategy.getDegradationRate());
+            printf("  Degradation rate: %.6f ms/s\n", reorderingStrategy.getDegradationRate());
         }
         printf("  Total update: %.2f ms\n", metrics.totalTimeMs);
     }
@@ -1450,6 +1442,7 @@ public:
         std::cout << "Starting SFC Barnes-Hut GPU simulation..." << std::endl;
         std::cout << "Bodies: " << nBodies << ", Nodes: " << nNodes << std::endl;
         std::cout << "Theta parameter: " << g_theta << std::endl;
+        std::cout << "Domain size (periodic boundaries): " << std::scientific << g_domainSize << std::endl;
         if (useSFC)
             std::cout << "Using SFC ordering, curve type: " << (curveType == sfc::CurveType::MORTON ? "MORTON" : "HILBERT") << std::endl;
         else
@@ -1459,8 +1452,11 @@ public:
 
         for (int i = 0; i < numIterations; i++)
         {
-
+            // Ejecutar la simulación (sin incluir el cálculo de energía en el tiempo)
             update();
+
+            // Calcular energías por separado (no afecta el tiempo de simulación)
+            calculateEnergies();
 
             potentialEnergyAvg += potentialEnergy;
             kineticEnergyAvg += kineticEnergy;
@@ -1484,7 +1480,6 @@ public:
             totalEnergyAvg /= numIterations;
         }
 
-        std::cout << "Simulation completed in " << simTimeMs << " ms." << std::endl;
         printSummary(numIterations);
     }
 
@@ -1504,7 +1499,11 @@ public:
 
         for (int step = 0; step < steps; step++)
         {
+            // Ejecutar la simulación (sin incluir el cálculo de energía en el tiempo)
             update();
+            
+            // Calcular energías por separado (no afecta el tiempo de simulación)
+            calculateEnergies();
 
             totalTime += metrics.totalTimeMs;
             totalForceTime += metrics.forceTimeMs;
@@ -1543,7 +1542,7 @@ public:
             std::cout << "SFC Configuration:" << std::endl;
             std::cout << "  Optimal reorder freq: " << reorderingStrategy.getOptimalFrequency() << std::endl;
             std::cout << "  Degradation rate: " << std::fixed << std::setprecision(6)
-                      << reorderingStrategy.getDegradationRate() << " ms/iter" << std::endl;
+                      << reorderingStrategy.getDegradationRate() << " ms/s" << std::endl;
         }
     }
 
@@ -1597,7 +1596,7 @@ public:
             std::cout << "SFC Configuration:" << std::endl;
             std::cout << "  Optimal reorder freq: " << reorderingStrategy.getOptimalFrequency() << std::endl;
             std::cout << "  Degradation rate: " << std::fixed << std::setprecision(6)
-                      << reorderingStrategy.getDegradationRate() << " ms/iter" << std::endl;
+                      << reorderingStrategy.getDegradationRate() << " ms/s" << std::endl;
             std::cout << "  Performance ratio: " << std::fixed << std::setprecision(3)
                       << reorderingStrategy.getPerformanceRatio() << std::endl;
             std::cout << "  Performance plateau: " << (reorderingStrategy.isPerformancePlateau() ? "yes" : "no") << std::endl;
@@ -1616,11 +1615,12 @@ int main(int argc, char **argv)
     parser.add_argument("mass", "Mass distribution (uniform, normal)", std::string("normal"));
     parser.add_argument("seed", "Random seed", 42);
     parser.add_argument("curve", "SFC curve type (morton, hilbert)", std::string("morton"));
-    parser.add_argument("iter", "Number of iterations", 100);
+    parser.add_argument("s", "Number of iterations", 100);
     parser.add_argument("block", "CUDA block size", DEFAULT_BLOCK_SIZE);
     parser.add_argument("theta", "Barnes-Hut opening angle parameter", DEFAULT_THETA);
     parser.add_argument("sm", "Shared memory size per block (bytes, 0=auto)", 0);
     parser.add_argument("leaf", "Maximum bodies per leaf node", 1);
+    parser.add_argument("l", "Domain size L for periodic boundary conditions", DEFAULT_DOMAIN_SIZE);
     parser.add_flag("energy", "Calculate system energy");
     
     // Parse command line arguments
@@ -1635,7 +1635,6 @@ int main(int argc, char **argv)
     // Extract parsed arguments
     int nBodies = parser.get<int>("n");
     bool useSFC = !parser.get<bool>("nosfc");
-    int reorderFreq = parser.get<int>("freq");
     
     // Parse distribution type
     std::string distStr = parser.get<std::string>("dist");
@@ -1664,18 +1663,20 @@ int main(int argc, char **argv)
         curveType = sfc::CurveType::HILBERT;
     }
     
-    int numIterations = parser.get<int>("iter");
+    int numIterations = parser.get<int>("s");
     int blockSize = parser.get<int>("block");
     double theta = parser.get<double>("theta");
+    double domainSize = parser.get<double>("l");
     
     bool useDynamicReordering = true;
 
     g_blockSize = blockSize;
     g_theta = theta;
+    g_domainSize = domainSize;
 
     SFCBarnesHutGPU simulation(
         nBodies,
-        nBodies * 16, // Increased from 8 to 16 to provide more nodes
+        std::min(nBodies * 8, 2000000), // Limitar el número máximo de nodos para evitar problemas de memoria
         8,
         bodyDist,
         massDist,

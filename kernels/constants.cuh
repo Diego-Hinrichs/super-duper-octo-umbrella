@@ -35,7 +35,13 @@ namespace SimulationConstants
 
     // Implementation constants
     constexpr int MAX_REORDER_BODY_SIZE = 20000; // Maximum size for body array reordering
+    
+    // Periodic boundary conditions
+    constexpr double DEFAULT_DOMAIN_SIZE = 2.0e12; // Default domain size L (2 * MAX_DIST)
 }
+
+// Runtime configurable domain size for periodic boundary conditions
+extern double g_domainSize;
 
 // Compatibility macros for existing code
 #define WINDOW_WIDTH SimulationConstants::WINDOW_WIDTH
@@ -65,5 +71,7 @@ extern int g_blockSize;
 #define CENTERZ SimulationConstants::CENTERZ
 #define MORTON_BITS SimulationConstants::MORTON_BITS
 #define MAX_REORDER_BODY_SIZE SimulationConstants::MAX_REORDER_BODY_SIZE
+#define DEFAULT_DOMAIN_SIZE SimulationConstants::DEFAULT_DOMAIN_SIZE
+#define DOMAIN_SIZE g_domainSize
 
 #endif // CONSTANTS_CUH

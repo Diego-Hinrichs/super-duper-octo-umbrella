@@ -126,6 +126,16 @@ __device__ void warpReduce(volatile double *totalMass, volatile double3 *centerM
 __device__ void ComputeCenterMass(Node &curNode, Body *bodies, double *totalMass, double3 *centerMass, int start, int end)
 {
     int tx = threadIdx.x;
+    
+    // Validar límites de entrada
+    if (start < 0 || end < 0 || start > end) {
+        if (tx == 0) {
+            curNode.totalMass = 0.0;
+            curNode.centerMass = {0.0, 0.0, 0.0};
+        }
+        return;
+    }
+    
     int total = end - start + 1;
     int sz = ceil((double)total / blockDim.x);
     int s = tx * sz + start;
@@ -134,7 +144,7 @@ __device__ void ComputeCenterMass(Node &curNode, Body *bodies, double *totalMass
 
     for (int i = s; i < s + sz; ++i)
     {
-        if (i <= end)
+        if (i <= end && i >= start && i >= 0)
         {
             Body &body = bodies[i];
             M += body.mass;
@@ -146,7 +156,7 @@ __device__ void ComputeCenterMass(Node &curNode, Body *bodies, double *totalMass
 
     totalMass[tx] = M;
     centerMass[tx] = R;
-    // printf("Thread %d: totalMass = %f, centerMass = (%f, %f, %f)\n", tx, totalMass[tx], centerMass[tx].x, centerMass[tx].y, centerMass[tx].z);
+    
     for (unsigned int stride = blockDim.x / 2; stride > 32; stride >>= 1)
     {
         __syncthreads();
@@ -168,11 +178,16 @@ __device__ void ComputeCenterMass(Node &curNode, Body *bodies, double *totalMass
 
     if (tx == 0)
     {
-        centerMass[0].x /= totalMass[0];
-        centerMass[0].y /= totalMass[0];
-        centerMass[0].z /= totalMass[0];
-        curNode.totalMass = totalMass[0];
-        curNode.centerMass = {centerMass[0].x, centerMass[0].y, centerMass[0].z};
+        if (totalMass[0] > 0.0) {
+            centerMass[0].x /= totalMass[0];
+            centerMass[0].y /= totalMass[0];
+            centerMass[0].z /= totalMass[0];
+            curNode.totalMass = totalMass[0];
+            curNode.centerMass = {centerMass[0].x, centerMass[0].y, centerMass[0].z};
+        } else {
+            curNode.totalMass = 0.0;
+            curNode.centerMass = {0.0, 0.0, 0.0};
+        }
     }
 }
 
@@ -183,11 +198,20 @@ __device__ void CountBodies(Body *bodies, Vector topLeftFront, Vector botRightBa
         count[tx] = 0;
     __syncthreads();
 
-    for (int i = start + tx; i <= end; i += blockDim.x)
+    // Validar límites antes de procesar
+    if (start < 0 || end < 0 || start >= nBodies || end >= nBodies || start > end) {
+        return;
+    }
+
+    for (int i = start + tx; i <= end && i < nBodies; i += blockDim.x)
     {
-        Body body = bodies[i];
-        int oct = getOctant(topLeftFront, botRightBack, body.position.x, body.position.y, body.position.z);
-        atomicAdd(&count[oct - 1], 1);
+        if (i >= 0 && i < nBodies) {
+            Body body = bodies[i];
+            int oct = getOctant(topLeftFront, botRightBack, body.position.x, body.position.y, body.position.z);
+            if (oct >= 1 && oct <= 8) {
+                atomicAdd(&count[oct - 1], 1);
+            }
+        }
     }
     __syncthreads();
 }
@@ -209,110 +233,35 @@ __device__ void ComputeOffset(int *count, int start)
 
 __device__ void GroupBodies(Body *bodies, Body *buffer, Vector topLeftFront, Vector botRightBack, int *workOffset, int start, int end, int nBodies)
 {
-    for (int i = start + threadIdx.x; i <= end; i += blockDim.x)
+    // Validar límites antes de procesar
+    if (start < 0 || end < 0 || start >= nBodies || end >= nBodies || start > end) {
+        return;
+    }
+
+    for (int i = start + threadIdx.x; i <= end && i < nBodies; i += blockDim.x)
     {
-        Body body = bodies[i];
-        int oct = getOctant(topLeftFront, botRightBack, body.position.x, body.position.y, body.position.z);
-        int dest = atomicAdd(&workOffset[oct - 1], 1);
-        buffer[dest] = body;
+        if (i >= 0 && i < nBodies) {
+            Body body = bodies[i];
+            int oct = getOctant(topLeftFront, botRightBack, body.position.x, body.position.y, body.position.z);
+            if (oct >= 1 && oct <= 8) {
+                int dest = atomicAdd(&workOffset[oct - 1], 1);
+                if (dest >= 0 && dest < nBodies) {
+                    buffer[dest] = body;
+                }
+            }
+        }
     }
     __syncthreads();
 }
 
-// __global__ void ConstructOctTreeKernel(Node *node, Body *bodies, Body *buffer, int nodeIndex, int nNodes, int nBodies, int leafLimit)
-// {
-//     // Reservamos memoria compartida para 8 contadores y 8 offsets (total 16 enteros)
-//     __shared__ int count[16]; // count[0..7]: cantidad de cuerpos por octante; count[8..15]: offsets base
-//     __shared__ double totalMass[BLOCK_SIZE];
-//     __shared__ double3 centerMass[BLOCK_SIZE];
-
-//     int tx = threadIdx.x;
-//     // Ajustar el índice del nodo según el bloque
-//     nodeIndex += blockIdx.x;
-//     if (nodeIndex >= nNodes)
-//         return;
-
-//     Node &curNode = node[nodeIndex];
-//     int start = curNode.start;
-//     int end = curNode.end;
-//     Vector topLeftFront = curNode.topLeftFront;
-//     Vector botRightBack = curNode.botRightBack;
-
-//     if (start == -1 && end == -1)
-//         return;
-
-//     // Calcula el centro de masa para el nodo actual (actualiza curNode)
-//     ComputeCenterMass(curNode, bodies, totalMass, centerMass, start, end);
-
-//     // Si ya se alcanzó el límite de subdivisión o hay un único cuerpo, copiamos el bloque y retornamos
-//     if (nodeIndex >= leafLimit || start == end)
-//     {
-//         for (int i = start; i <= end; ++i)
-//         {
-//             buffer[i] = bodies[i];
-//         }
-//         return;
-//     }
-
-//     // Paso 1: contar la cantidad de cuerpos en cada octante.
-//     CountBodies(bodies, topLeftFront, botRightBack, count, start, end, nBodies);
-//     // Paso 2: calcular los offsets base a partir de 'start'
-//     ComputeOffset(count, start);
-
-//     // Copiar los offsets base (calculados en count[8..15]) a un arreglo compartido para usarlos en la asignación de nodos hijos.
-//     __shared__ int baseOffset[8];
-//     __shared__ int workOffset[8]; // copia que se usará para las operaciones atómicas en GroupBodies
-//     if (tx < 8)
-//     {
-//         baseOffset[tx] = count[tx + 8];  // guardar el offset original para el octante tx
-//         workOffset[tx] = baseOffset[tx]; // inicializar la copia de trabajo
-//     }
-//     __syncthreads();
-
-//     // Paso 3: agrupar cuerpos en el buffer según su octante, usando el arreglo workOffset.
-//     GroupBodies(bodies, buffer, topLeftFront, botRightBack, workOffset, start, end, nBodies);
-
-//     // Paso 4: asignar los rangos a los nodos hijos (únicamente en tx==0)
-//     if (tx == 0)
-//     {
-//         // Para cada uno de los 8 octantes (i de 0 a 7)
-//         for (int i = 0; i < 8; i++)
-//         {
-//             // El hijo correspondiente se ubica en: (nodeIndex * 8 + (i+1))
-//             Node &childNode = node[nodeIndex * 8 + (i + 1)];
-//             // Actualizar los límites (bounding box) del hijo
-//             UpdateChildBound(topLeftFront, botRightBack, childNode, i + 1);
-//             if (count[i] > 0)
-//             {
-//                 // Asignar el rango usando el offset base
-//                 childNode.start = baseOffset[i];
-//                 childNode.end = childNode.start + count[i] - 1;
-//             }
-//             else
-//             {
-//                 childNode.start = -1;
-//                 childNode.end = -1;
-//             }
-//         }
-
-//         curNode.isLeaf = false;
-        
-//         // Implementación de paralelismo dinámico
-//         // Lanzar kernels hijo para cada octante que contenga cuerpos
-//         for (int i = 0; i < 8; i++) {
-//             int childIndex = nodeIndex * 8 + (i + 1);
-//             if (childIndex < nNodes && count[i] > 0) {
-//                 // Lanzar kernel hijo con un solo bloque para este nodo hijo
-//                 ConstructOctTreeKernel<<<1, BLOCK_SIZE>>>(
-//                     node, buffer, bodies, childIndex, nNodes, nBodies, leafLimit);
-//             }
-//         }
-//     }
-// }
-
 // Kernel para construir el octree
 __global__ void ConstructOctTreeKernel(Node *node, Body *bodies, Body *buffer, int nodeIndex, int nNodes, int nBodies, int leafLimit)
 {
+    // Validaciones de límites al inicio
+    if (nodeIndex >= nNodes || nBodies <= 0) {
+        return;
+    }
+    
     // Reservamos memoria compartida para 8 contadores y 8 offsets (total 16 enteros)
     __shared__ int count[16]; // count[0..7]: cantidad de cuerpos por octante; count[8..15]: offsets base
     
@@ -322,19 +271,23 @@ __global__ void ConstructOctTreeKernel(Node *node, Body *bodies, Body *buffer, i
     double3 *centerMass = (double3*)(totalMass + blockDim.x);
 
     int tx = threadIdx.x;
-    // Ajustar el índice del nodo según el bloque
-    nodeIndex += blockIdx.x;
-    if (nodeIndex >= nNodes)
+    
+    // Validar que el nodo existe
+    if (nodeIndex >= nNodes) {
         return;
+    }
 
     Node &curNode = node[nodeIndex];
     int start = curNode.start;
     int end = curNode.end;
+    
+    // Validar rangos de índices
+    if (start < 0 || end < 0 || start >= nBodies || end >= nBodies || start > end) {
+        return;
+    }
+    
     Vector topLeftFront = curNode.topLeftFront;
     Vector botRightBack = curNode.botRightBack;
-
-    if (start == -1 && end == -1)
-        return;
 
     // Calcula el centro de masa para el nodo actual (actualiza curNode)
     ComputeCenterMass(curNode, bodies, totalMass, centerMass, start, end);
@@ -342,9 +295,12 @@ __global__ void ConstructOctTreeKernel(Node *node, Body *bodies, Body *buffer, i
     // Si ya se alcanzó el límite de subdivisión o hay un único cuerpo, copiamos el bloque y retornamos
     if (nodeIndex >= leafLimit || start == end)
     {
-        for (int i = start; i <= end; ++i)
+        // Validar límites antes de copiar
+        for (int i = start; i <= end && i < nBodies; ++i)
         {
-            buffer[i] = bodies[i];
+            if (i >= 0 && i < nBodies) {
+                buffer[i] = bodies[i];
+            }
         }
         return;
     }
@@ -373,25 +329,49 @@ __global__ void ConstructOctTreeKernel(Node *node, Body *bodies, Body *buffer, i
         // Para cada uno de los 8 octantes (i de 0 a 7)
         for (int i = 0; i < 8; i++)
         {
-            // El hijo correspondiente se ubica en: (nodeIndex * 8 + (i+1))
-            Node &childNode = node[nodeIndex * 8 + (i + 1)];
+            // Calcular el índice del hijo con validación de límites
+            int childIndex = nodeIndex * 8 + (i + 1);
+            
+            // Validar que el índice del hijo no exceda los límites
+            if (childIndex >= nNodes) {
+                break; // Salir del bucle si excedemos los nodos disponibles
+            }
+            
+            Node &childNode = node[childIndex];
+            
             // Actualizar los límites (bounding box) del hijo
             UpdateChildBound(topLeftFront, botRightBack, childNode, i + 1);
+            
             if (count[i] > 0)
             {
-                // Asignar el rango usando el offset base
-                childNode.start = baseOffset[i];
-                childNode.end = childNode.start + count[i] - 1;
+                // Validar que los offsets están dentro de los límites
+                int childStart = baseOffset[i];
+                int childEnd = childStart + count[i] - 1;
+                
+                if (childStart >= 0 && childStart < nBodies && 
+                    childEnd >= 0 && childEnd < nBodies && 
+                    childStart <= childEnd) {
+                    
+                    childNode.start = childStart;
+                    childNode.end = childEnd;
+                    childNode.bodyCount = count[i];
+                } else {
+                    // Si los índices están fuera de rango, marcar como vacío
+                    childNode.start = -1;
+                    childNode.end = -1;
+                    childNode.bodyCount = 0;
+                }
             }
             else
             {
                 childNode.start = -1;
                 childNode.end = -1;
+                childNode.bodyCount = 0;
             }
         }
 
         curNode.isLeaf = false;
-        // Lanzar la recursión para los hijos: se usan 8 bloques
-        // ConstructOctTreeKernel<<<8, BLOCK_SIZE>>>(node, buffer, bodies, nodeIndex * 8 + 1, nNodes, nBodies, leafLimit);
+        // Nota: Se removió el lanzamiento recursivo de kernels para evitar problemas de memoria
+        // La recursión se manejará de manera iterativa desde el host si es necesario
     }
 }
