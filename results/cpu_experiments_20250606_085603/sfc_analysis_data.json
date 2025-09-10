@@ -1,0 +1,264 @@
+{
+  "algorithms": {
+    "barneshut": {
+      "curves": {
+        "morton": {
+          "dynamic": {
+            "avg_time": 32.00899999999999,
+            "avg_frequency": 0.0,
+            "by_body_count": {
+              "10000": {
+                "avg_frequency": 0.0,
+                "avg_time": 32.00899999999999
+              }
+            }
+          },
+          "fixed": {
+            "by_frequency": {
+              "5": {
+                "avg_time": 30.352
+              },
+              "10": {
+                "avg_time": 32.025
+              },
+              "15": {
+                "avg_time": 33.747
+              },
+              "20": {
+                "avg_time": 35.455
+              },
+              "30": {
+                "avg_time": 38.979
+              },
+              "50": {
+                "avg_time": 45.862
+              },
+              "100": {
+                "avg_time": 63.080999999999996
+              }
+            },
+            "by_body_count": {
+              "10000": {
+                "5": {
+                  "avg_time": 30.352
+                },
+                "10": {
+                  "avg_time": 32.025
+                },
+                "15": {
+                  "avg_time": 33.747
+                },
+                "20": {
+                  "avg_time": 35.455
+                },
+                "30": {
+                  "avg_time": 38.979
+                },
+                "50": {
+                  "avg_time": 45.862
+                },
+                "100": {
+                  "avg_time": 63.080999999999996
+                }
+              }
+            }
+          }
+        },
+        "hilbert": {
+          "dynamic": {
+            "avg_time": 63.40800000000001,
+            "avg_frequency": 0.0,
+            "by_body_count": {
+              "10000": {
+                "avg_frequency": 0.0,
+                "avg_time": 63.40800000000001
+              }
+            }
+          },
+          "fixed": {
+            "by_frequency": {
+              "5": {
+                "avg_time": 63.421
+              },
+              "10": {
+                "avg_time": 63.40800000000001
+              },
+              "15": {
+                "avg_time": 63.402
+              },
+              "20": {
+                "avg_time": 63.421
+              },
+              "30": {
+                "avg_time": 63.423
+              },
+              "50": {
+                "avg_time": 63.424
+              },
+              "100": {
+                "avg_time": 63.461
+              }
+            },
+            "by_body_count": {
+              "10000": {
+                "5": {
+                  "avg_time": 63.421
+                },
+                "10": {
+                  "avg_time": 63.40800000000001
+                },
+                "15": {
+                  "avg_time": 63.402
+                },
+                "20": {
+                  "avg_time": 63.421
+                },
+                "30": {
+                  "avg_time": 63.423
+                },
+                "50": {
+                  "avg_time": 63.424
+                },
+                "100": {
+                  "avg_time": 63.461
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "directsum": {
+      "curves": {
+        "morton": {
+          "dynamic": {
+            "avg_time": 96.064,
+            "avg_frequency": 0.0,
+            "by_body_count": {
+              "10000": {
+                "avg_frequency": 0.0,
+                "avg_time": 96.064
+              }
+            }
+          },
+          "fixed": {
+            "by_frequency": {
+              "5": {
+                "avg_time": 90.717
+              },
+              "10": {
+                "avg_time": 96.169
+              },
+              "15": {
+                "avg_time": 101.374
+              },
+              "20": {
+                "avg_time": 106.49000000000001
+              },
+              "30": {
+                "avg_time": 117.518
+              },
+              "50": {
+                "avg_time": 138.881
+              },
+              "100": {
+                "avg_time": 191.694
+              }
+            },
+            "by_body_count": {
+              "10000": {
+                "5": {
+                  "avg_time": 90.717
+                },
+                "10": {
+                  "avg_time": 96.169
+                },
+                "15": {
+                  "avg_time": 101.374
+                },
+                "20": {
+                  "avg_time": 106.49000000000001
+                },
+                "30": {
+                  "avg_time": 117.518
+                },
+                "50": {
+                  "avg_time": 138.881
+                },
+                "100": {
+                  "avg_time": 191.694
+                }
+              }
+            }
+          }
+        },
+        "hilbert": {
+          "dynamic": {
+            "avg_time": 192.713,
+            "avg_frequency": 0.0,
+            "by_body_count": {
+              "10000": {
+                "avg_frequency": 0.0,
+                "avg_time": 192.713
+              }
+            }
+          },
+          "fixed": {
+            "by_frequency": {
+              "5": {
+                "avg_time": 192.888
+              },
+              "10": {
+                "avg_time": 193.139
+              },
+              "15": {
+                "avg_time": 192.799
+              },
+              "20": {
+                "avg_time": 192.936
+              },
+              "30": {
+                "avg_time": 192.495
+              },
+              "50": {
+                "avg_time": 192.794
+              },
+              "100": {
+                "avg_time": 193.113
+              }
+            },
+            "by_body_count": {
+              "10000": {
+                "5": {
+                  "avg_time": 192.888
+                },
+                "10": {
+                  "avg_time": 193.139
+                },
+                "15": {
+                  "avg_time": 192.799
+                },
+                "20": {
+                  "avg_time": 192.936
+                },
+                "30": {
+                  "avg_time": 192.495
+                },
+                "50": {
+                  "avg_time": 192.794
+                },
+                "100": {
+                  "avg_time": 193.113
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "summary": {
+    "total_experiments": 32,
+    "date": "2025-06-06 09:51:10"
+  }
+}

@@ -1,0 +1,1108 @@
+/home/dhinrichs/tesis/super-duper-octo-umbrella
+Sun Jun 22 10:22:34 AM -04 2025
+🎯 Algoritmos seleccionados: ['directsum']
+🔨 Compilando algoritmos...
+  Compilando directsum...
+  ✅ directsum compilado exitosamente
+📈 Ejecutando experimentos de frecuencia óptima vs N...
+
+📊 Algoritmo: DIRECTSUM
+
+  🔬 Analizando N=1000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 0.281s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.501s ← MEJOR
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.376s ← MEJOR
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.245s ← MEJOR
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 1.255s 
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.618s 
+      🎯 SFC-Opt (freq=15): 0.245s
+        📊 Speedup vs Baseline: 1.15x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.850s ← MEJOR
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.607s ← MEJOR
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.632s 
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.474s ← MEJOR
+    Ejecutando: ./main -n 1000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.345s ← MEJOR
+      🎯 SFC-Opt (freq=50): 0.345s
+        📊 Speedup vs Baseline: 0.81x
+
+  🔬 Analizando N=1200...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 0.705s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.209s ← MEJOR
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.643s ← MEJOR
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.590s ← MEJOR
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.708s 
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.213s 
+      🎯 SFC-Opt (freq=15): 0.590s
+        📊 Speedup vs Baseline: 1.19x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.408s ← MEJOR
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.173s 
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.908s 
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.758s 
+    Ejecutando: ./main -n 1200 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.387s ← MEJOR
+      🎯 SFC-Opt (freq=50): 0.387s
+        📊 Speedup vs Baseline: 1.82x
+
+  🔬 Analizando N=1500...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 0.426s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.487s ← MEJOR
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.050s 
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.105s 
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.675s 
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.459s ← MEJOR
+      🎯 SFC-Opt (freq=50): 0.459s
+        📊 Speedup vs Baseline: 0.93x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.391s ← MEJOR
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.583s 
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.930s 
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.627s 
+    Ejecutando: ./main -n 1500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.699s 
+      🎯 SFC-Opt (freq=5): 0.391s
+        📊 Speedup vs Baseline: 1.09x
+
+  🔬 Analizando N=1800...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 0.972s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.750s ← MEJOR
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.653s ← MEJOR
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.904s 
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.543s ← MEJOR
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.461s ← MEJOR
+      🎯 SFC-Opt (freq=50): 0.461s
+        📊 Speedup vs Baseline: 2.11x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.999s ← MEJOR
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.995s ← MEJOR
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.494s ← MEJOR
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.850s 
+    Ejecutando: ./main -n 1800 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.702s 
+      🎯 SFC-Opt (freq=15): 0.494s
+        📊 Speedup vs Baseline: 1.97x
+
+  🔬 Analizando N=2000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 1.056s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.800s ← MEJOR
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.565s ← MEJOR
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.109s 
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.519s ← MEJOR
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.630s 
+      🎯 SFC-Opt (freq=20): 0.519s
+        📊 Speedup vs Baseline: 2.03x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.539s ← MEJOR
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.455s 
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.992s 
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.692s 
+    Ejecutando: ./main -n 2000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.580s 
+      🎯 SFC-Opt (freq=5): 0.539s
+        📊 Speedup vs Baseline: 1.96x
+
+  🔬 Analizando N=2500...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 0.969s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.773s ← MEJOR
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.824s 
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.649s ← MEJOR
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.607s ← MEJOR
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 0.910s 
+      🎯 SFC-Opt (freq=20): 0.607s
+        📊 Speedup vs Baseline: 1.60x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.511s ← MEJOR
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.003s ← MEJOR
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.925s ← MEJOR
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.760s ← MEJOR
+    Ejecutando: ./main -n 2500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.194s 
+      🎯 SFC-Opt (freq=20): 0.760s
+        📊 Speedup vs Baseline: 1.27x
+
+  🔬 Analizando N=3000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 1.035s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.101s ← MEJOR
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.426s ← MEJOR
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 0.816s 
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.940s 
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.160s 
+      🎯 SFC-Opt (freq=10): 0.426s
+        📊 Speedup vs Baseline: 2.43x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.447s ← MEJOR
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.124s ← MEJOR
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.388s 
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 1.661s 
+    Ejecutando: ./main -n 3000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.361s 
+      🎯 SFC-Opt (freq=10): 1.124s
+        📊 Speedup vs Baseline: 0.92x
+
+  🔬 Analizando N=3500...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 1.762s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.603s ← MEJOR
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 0.904s 
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.257s 
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 1.160s 
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.028s 
+      🎯 SFC-Opt (freq=5): 0.603s
+        📊 Speedup vs Baseline: 2.92x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.306s ← MEJOR
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.493s 
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.111s ← MEJOR
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 1.412s 
+    Ejecutando: ./main -n 3500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.429s 
+      🎯 SFC-Opt (freq=15): 1.111s
+        📊 Speedup vs Baseline: 1.59x
+
+  🔬 Analizando N=4000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 1.530s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 0.907s ← MEJOR
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.005s 
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.127s 
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 0.832s ← MEJOR
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.194s 
+      🎯 SFC-Opt (freq=20): 0.832s
+        📊 Speedup vs Baseline: 1.84x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.851s ← MEJOR
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.441s ← MEJOR
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.545s 
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 1.606s 
+    Ejecutando: ./main -n 4000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.671s 
+      🎯 SFC-Opt (freq=10): 1.441s
+        📊 Speedup vs Baseline: 1.06x
+
+  🔬 Analizando N=4500...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 1.890s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.175s ← MEJOR
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.210s 
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.757s 
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 1.255s 
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.910s 
+      🎯 SFC-Opt (freq=5): 1.175s
+        📊 Speedup vs Baseline: 1.61x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 2.008s ← MEJOR
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.959s ← MEJOR
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.945s ← MEJOR
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 1.865s ← MEJOR
+    Ejecutando: ./main -n 4500 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.883s 
+      🎯 SFC-Opt (freq=20): 1.865s
+        📊 Speedup vs Baseline: 1.01x
+
+  🔬 Analizando N=5000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 2.562s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.179s ← MEJOR
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.995s 
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.376s 
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 1.532s 
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 1.758s 
+      🎯 SFC-Opt (freq=5): 1.179s
+        📊 Speedup vs Baseline: 2.17x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 2.427s ← MEJOR
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 2.431s 
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 3.115s 
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 2.733s 
+    Ejecutando: ./main -n 5000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 2.506s 
+      🎯 SFC-Opt (freq=5): 2.427s
+        📊 Speedup vs Baseline: 1.06x
+
+  🔬 Analizando N=6000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 3.263s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 1.526s ← MEJOR
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 1.825s 
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 1.883s 
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 1.913s 
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 3.455s 
+      🎯 SFC-Opt (freq=5): 1.526s
+        📊 Speedup vs Baseline: 2.14x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 3.073s ← MEJOR
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 3.771s 
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 3.365s 
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 4.256s 
+    Ejecutando: ./main -n 6000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 4.705s 
+      🎯 SFC-Opt (freq=5): 3.073s
+        📊 Speedup vs Baseline: 1.06x
+
+  🔬 Analizando N=7000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 4.587s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 2.439s ← MEJOR
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 3.013s 
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 2.274s ← MEJOR
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 2.979s 
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 3.013s 
+      🎯 SFC-Opt (freq=15): 2.274s
+        📊 Speedup vs Baseline: 2.02x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 4.474s ← MEJOR
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 4.260s ← MEJOR
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 4.161s ← MEJOR
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 4.981s 
+    Ejecutando: ./main -n 7000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 4.270s 
+      🎯 SFC-Opt (freq=15): 4.161s
+        📊 Speedup vs Baseline: 1.10x
+
+  🔬 Analizando N=8000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 5.454s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 2.721s ← MEJOR
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 3.803s 
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 3.392s 
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 3.656s 
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 4.864s 
+      🎯 SFC-Opt (freq=5): 2.721s
+        📊 Speedup vs Baseline: 2.00x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 6.705s ← MEJOR
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 6.288s ← MEJOR
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 6.662s 
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 5.421s ← MEJOR
+    Ejecutando: ./main -n 8000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 6.185s 
+      🎯 SFC-Opt (freq=20): 5.421s
+        📊 Speedup vs Baseline: 1.01x
+
+  🔬 Analizando N=9000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 7.586s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 4.804s ← MEJOR
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 3.965s ← MEJOR
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 4.250s 
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 4.104s 
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 4.762s 
+      🎯 SFC-Opt (freq=10): 3.965s
+        📊 Speedup vs Baseline: 1.91x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 7.418s ← MEJOR
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 7.454s 
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 8.548s 
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 8.885s 
+    Ejecutando: ./main -n 9000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 8.717s 
+      🎯 SFC-Opt (freq=5): 7.418s
+        📊 Speedup vs Baseline: 1.02x
+
+  🔬 Analizando N=10000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 9.212s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 5.754s ← MEJOR
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 5.115s ← MEJOR
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 4.873s ← MEJOR
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 5.952s 
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 7.384s 
+      🎯 SFC-Opt (freq=15): 4.873s
+        📊 Speedup vs Baseline: 1.89x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 8.980s ← MEJOR
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 10.864s 
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 9.690s 
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 8.202s ← MEJOR
+    Ejecutando: ./main -n 10000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 8.864s 
+      🎯 SFC-Opt (freq=20): 8.202s
+        📊 Speedup vs Baseline: 1.12x
+
+  🔬 Analizando N=12000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 14.520s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 7.765s ← MEJOR
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 6.887s ← MEJOR
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 6.689s ← MEJOR
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 7.480s 
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 11.197s 
+      🎯 SFC-Opt (freq=15): 6.689s
+        📊 Speedup vs Baseline: 2.17x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 12.049s ← MEJOR
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 13.201s 
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 13.871s 
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 13.997s 
+    Ejecutando: ./main -n 12000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 12.417s 
+      🎯 SFC-Opt (freq=5): 12.049s
+        📊 Speedup vs Baseline: 1.21x
+
+  🔬 Analizando N=15000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 21.282s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 10.762s ← MEJOR
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 10.297s ← MEJOR
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 10.754s 
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 11.993s 
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 14.752s 
+      🎯 SFC-Opt (freq=10): 10.297s
+        📊 Speedup vs Baseline: 2.07x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 19.325s ← MEJOR
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 20.608s 
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 19.469s 
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 20.471s 
+    Ejecutando: ./main -n 15000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 19.589s 
+      🎯 SFC-Opt (freq=5): 19.325s
+        📊 Speedup vs Baseline: 1.10x
+
+  🔬 Analizando N=18000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 25.970s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 13.686s ← MEJOR
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 14.715s 
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 17.915s 
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 16.275s 
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 21.794s 
+      🎯 SFC-Opt (freq=5): 13.686s
+        📊 Speedup vs Baseline: 1.90x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 27.065s ← MEJOR
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 27.565s 
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 27.441s 
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 28.700s 
+    Ejecutando: ./main -n 18000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 29.912s 
+      🎯 SFC-Opt (freq=5): 27.065s
+        📊 Speedup vs Baseline: 0.96x
+
+  🔬 Analizando N=20000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 33.951s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 18.377s ← MEJOR
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 16.902s ← MEJOR
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 18.821s 
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 18.976s 
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 25.697s 
+      🎯 SFC-Opt (freq=10): 16.902s
+        📊 Speedup vs Baseline: 2.01x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 32.421s ← MEJOR
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 34.327s 
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 33.404s 
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 35.755s 
+    Ejecutando: ./main -n 20000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 32.983s 
+      🎯 SFC-Opt (freq=5): 32.421s
+        📊 Speedup vs Baseline: 1.05x
+
+  🔬 Analizando N=25000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 52.278s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 23.780s ← MEJOR
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 28.618s 
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 28.962s 
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 29.015s 
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 35.924s 
+      🎯 SFC-Opt (freq=5): 23.780s
+        📊 Speedup vs Baseline: 2.20x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 52.706s ← MEJOR
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 51.233s ← MEJOR
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 52.934s 
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 51.939s 
+    Ejecutando: ./main -n 25000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 50.352s ← MEJOR
+      🎯 SFC-Opt (freq=50): 50.352s
+        📊 Speedup vs Baseline: 1.04x
+
+  🔬 Analizando N=30000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 71.524s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 34.813s ← MEJOR
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 37.388s 
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 41.333s 
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 42.620s 
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 51.710s 
+      🎯 SFC-Opt (freq=5): 34.813s
+        📊 Speedup vs Baseline: 2.05x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 72.149s ← MEJOR
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 72.271s 
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 73.793s 
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 72.477s 
+    Ejecutando: ./main -n 30000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 73.826s 
+      🎯 SFC-Opt (freq=5): 72.149s
+        📊 Speedup vs Baseline: 0.99x
+
+  🔬 Analizando N=35000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 96.846s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 46.029s ← MEJOR
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 49.380s 
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 52.040s 
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 54.490s 
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 70.728s 
+      🎯 SFC-Opt (freq=5): 46.029s
+        📊 Speedup vs Baseline: 2.10x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 97.983s ← MEJOR
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 97.246s ← MEJOR
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 97.173s ← MEJOR
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 96.562s ← MEJOR
+    Ejecutando: ./main -n 35000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 97.137s 
+      🎯 SFC-Opt (freq=20): 96.562s
+        📊 Speedup vs Baseline: 1.00x
+
+  🔬 Analizando N=40000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 126.663s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 59.598s ← MEJOR
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 64.714s 
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 66.599s 
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 72.373s 
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 92.181s 
+      🎯 SFC-Opt (freq=5): 59.598s
+        📊 Speedup vs Baseline: 2.13x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 127.050s ← MEJOR
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 132.419s 
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 129.976s 
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 131.214s 
+    Ejecutando: ./main -n 40000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 129.205s 
+      🎯 SFC-Opt (freq=5): 127.050s
+        📊 Speedup vs Baseline: 1.00x
+
+  🔬 Analizando N=45000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 163.216s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 76.949s ← MEJOR
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 79.216s 
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 84.216s 
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 88.951s 
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 116.976s 
+      🎯 SFC-Opt (freq=5): 76.949s
+        📊 Speedup vs Baseline: 2.12x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 161.990s ← MEJOR
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 162.064s 
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 185.029s 
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 159.030s ← MEJOR
+    Ejecutando: ./main -n 45000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 165.651s 
+      🎯 SFC-Opt (freq=20): 159.030s
+        📊 Speedup vs Baseline: 1.03x
+
+  🔬 Analizando N=50000...
+    🚫 Baseline (Sin SFC)
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -nosfc
+      ✅ Tiempo baseline: 196.271s
+
+    📍 Curva: Morton
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 5
+        ⚡ Freq=5: 95.104s ← MEJOR
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 10
+        ⚡ Freq=10: 98.592s 
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 15
+        ⚡ Freq=15: 103.956s 
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 20
+        ⚡ Freq=20: 109.659s 
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve morton -fixreorder 1 -freq 50
+        ⚡ Freq=50: 142.035s 
+      🎯 SFC-Opt (freq=5): 95.104s
+        📊 Speedup vs Baseline: 2.06x
+
+    📍 Curva: Hilbert
+      🔍 Probando frecuencias: [5, 10, 15, 20, 50]
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 5
+        ⚡ Freq=5: 200.830s ← MEJOR
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 10
+        ⚡ Freq=10: 199.368s ← MEJOR
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 15
+        ⚡ Freq=15: 197.215s ← MEJOR
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 20
+        ⚡ Freq=20: 196.370s ← MEJOR
+    Ejecutando: ./main -n 50000 -t 32 -s 100 -seed 42 -mass uniform -curve hilbert -fixreorder 1 -freq 50
+        ⚡ Freq=50: 196.237s ← MEJOR
+      🎯 SFC-Opt (freq=50): 196.237s
+        📊 Speedup vs Baseline: 1.00x
+
+📊 Analizando resultados de frecuencia óptima vs N...
+📋 Total de resultados del experimento: 338
+  ✅ SFC-Opt guardado: directsum_Morton, N=1000, freq=15, tiempo=0.245s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=1000, freq=50, tiempo=0.345s
+  ✅ SFC-Opt guardado: directsum_Morton, N=1200, freq=15, tiempo=0.590s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=1200, freq=50, tiempo=0.387s
+  ✅ SFC-Opt guardado: directsum_Morton, N=1500, freq=50, tiempo=0.459s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=1500, freq=5, tiempo=0.391s
+  ✅ SFC-Opt guardado: directsum_Morton, N=1800, freq=50, tiempo=0.461s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=1800, freq=15, tiempo=0.494s
+  ✅ SFC-Opt guardado: directsum_Morton, N=2000, freq=20, tiempo=0.519s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=2000, freq=5, tiempo=0.539s
+  ✅ SFC-Opt guardado: directsum_Morton, N=2500, freq=20, tiempo=0.607s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=2500, freq=20, tiempo=0.760s
+  ✅ SFC-Opt guardado: directsum_Morton, N=3000, freq=10, tiempo=0.426s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=3000, freq=10, tiempo=1.124s
+  ✅ SFC-Opt guardado: directsum_Morton, N=3500, freq=5, tiempo=0.603s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=3500, freq=15, tiempo=1.111s
+  ✅ SFC-Opt guardado: directsum_Morton, N=4000, freq=20, tiempo=0.832s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=4000, freq=10, tiempo=1.441s
+  ✅ SFC-Opt guardado: directsum_Morton, N=4500, freq=5, tiempo=1.175s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=4500, freq=20, tiempo=1.865s
+  ✅ SFC-Opt guardado: directsum_Morton, N=5000, freq=5, tiempo=1.179s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=5000, freq=5, tiempo=2.427s
+  ✅ SFC-Opt guardado: directsum_Morton, N=6000, freq=5, tiempo=1.526s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=6000, freq=5, tiempo=3.073s
+  ✅ SFC-Opt guardado: directsum_Morton, N=7000, freq=15, tiempo=2.274s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=7000, freq=15, tiempo=4.161s
+  ✅ SFC-Opt guardado: directsum_Morton, N=8000, freq=5, tiempo=2.721s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=8000, freq=20, tiempo=5.421s
+  ✅ SFC-Opt guardado: directsum_Morton, N=9000, freq=10, tiempo=3.965s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=9000, freq=5, tiempo=7.418s
+  ✅ SFC-Opt guardado: directsum_Morton, N=10000, freq=15, tiempo=4.873s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=10000, freq=20, tiempo=8.202s
+  ✅ SFC-Opt guardado: directsum_Morton, N=12000, freq=15, tiempo=6.689s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=12000, freq=5, tiempo=12.049s
+  ✅ SFC-Opt guardado: directsum_Morton, N=15000, freq=10, tiempo=10.297s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=15000, freq=5, tiempo=19.325s
+  ✅ SFC-Opt guardado: directsum_Morton, N=18000, freq=5, tiempo=13.686s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=18000, freq=5, tiempo=27.065s
+  ✅ SFC-Opt guardado: directsum_Morton, N=20000, freq=10, tiempo=16.902s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=20000, freq=5, tiempo=32.421s
+  ✅ SFC-Opt guardado: directsum_Morton, N=25000, freq=5, tiempo=23.780s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=25000, freq=50, tiempo=50.352s
+  ✅ SFC-Opt guardado: directsum_Morton, N=30000, freq=5, tiempo=34.813s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=30000, freq=5, tiempo=72.149s
+  ✅ SFC-Opt guardado: directsum_Morton, N=35000, freq=5, tiempo=46.029s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=35000, freq=20, tiempo=96.562s
+  ✅ SFC-Opt guardado: directsum_Morton, N=40000, freq=5, tiempo=59.598s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=40000, freq=5, tiempo=127.050s
+  ✅ SFC-Opt guardado: directsum_Morton, N=45000, freq=5, tiempo=76.949s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=45000, freq=20, tiempo=159.030s
+  ✅ SFC-Opt guardado: directsum_Morton, N=50000, freq=5, tiempo=95.104s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=50000, freq=50, tiempo=196.237s
+📈 directsum_Morton:
+  - Normal: 0 puntos
+  - SFC-Opt: 26 puntos
+  - Frecuencias óptimas: 26 puntos
+  - Datos por frecuencia: 130 puntos
+  - Muestra de frecuencias: [(1000, 15), (1200, 15), (1500, 50), (1800, 50), (2000, 20)]
+📈 directsum_Hilbert:
+  - Normal: 0 puntos
+  - SFC-Opt: 26 puntos
+  - Frecuencias óptimas: 26 puntos
+  - Datos por frecuencia: 130 puntos
+  - Muestra de frecuencias: [(1000, 50), (1200, 50), (1500, 5), (1800, 15), (2000, 5)]
+
+📊 Total de puntos de datos: 312
+
+📊 Datos organizados y listos para graficar
+📊 Generando gráficos...
+📊 Generando grilla de gráficos de frecuencia óptima...
+✅ Grilla de frecuencia óptima guardada: results/cpu_experiments_20250622_102235/optimal_frequency_vs_n_grid.png
+📊 Generando grilla de gráficos de rendimiento vs frecuencia...
+✅ Grilla de rendimiento vs frecuencia guardada: results/cpu_experiments_20250622_102235/performance_vs_frequency_grid.png
+📊 Generando grilla de gráficos de speedup...
+✅ Grilla de speedup guardada: results/cpu_experiments_20250622_102235/speedup_curves_grid.png
+✅ Gráficos generados exitosamente!
+
+📈 RESUMEN ESTADÍSTICO:
+
+🔍 directsum_Morton:
+  - Rango de N: 1000 - 50000
+  - Frecuencias óptimas: 5 - 50
+  - Frecuencia promedio: 12.9
+  - Total de puntos: 26
+
+🔍 directsum_Hilbert:
+  - Rango de N: 1000 - 50000
+  - Frecuencias óptimas: 5 - 50
+  - Frecuencia promedio: 16.9
+  - Total de puntos: 26
+💾 Resultados guardados en: results/cpu_experiments_20250622_102235/experiment_results.json
+
+📊 Analizando resultados de frecuencia óptima vs N...
+📋 Total de resultados del experimento: 338
+  ✅ SFC-Opt guardado: directsum_Morton, N=1000, freq=15, tiempo=0.245s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=1000, freq=50, tiempo=0.345s
+  ✅ SFC-Opt guardado: directsum_Morton, N=1200, freq=15, tiempo=0.590s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=1200, freq=50, tiempo=0.387s
+  ✅ SFC-Opt guardado: directsum_Morton, N=1500, freq=50, tiempo=0.459s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=1500, freq=5, tiempo=0.391s
+  ✅ SFC-Opt guardado: directsum_Morton, N=1800, freq=50, tiempo=0.461s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=1800, freq=15, tiempo=0.494s
+  ✅ SFC-Opt guardado: directsum_Morton, N=2000, freq=20, tiempo=0.519s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=2000, freq=5, tiempo=0.539s
+  ✅ SFC-Opt guardado: directsum_Morton, N=2500, freq=20, tiempo=0.607s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=2500, freq=20, tiempo=0.760s
+  ✅ SFC-Opt guardado: directsum_Morton, N=3000, freq=10, tiempo=0.426s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=3000, freq=10, tiempo=1.124s
+  ✅ SFC-Opt guardado: directsum_Morton, N=3500, freq=5, tiempo=0.603s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=3500, freq=15, tiempo=1.111s
+  ✅ SFC-Opt guardado: directsum_Morton, N=4000, freq=20, tiempo=0.832s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=4000, freq=10, tiempo=1.441s
+  ✅ SFC-Opt guardado: directsum_Morton, N=4500, freq=5, tiempo=1.175s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=4500, freq=20, tiempo=1.865s
+  ✅ SFC-Opt guardado: directsum_Morton, N=5000, freq=5, tiempo=1.179s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=5000, freq=5, tiempo=2.427s
+  ✅ SFC-Opt guardado: directsum_Morton, N=6000, freq=5, tiempo=1.526s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=6000, freq=5, tiempo=3.073s
+  ✅ SFC-Opt guardado: directsum_Morton, N=7000, freq=15, tiempo=2.274s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=7000, freq=15, tiempo=4.161s
+  ✅ SFC-Opt guardado: directsum_Morton, N=8000, freq=5, tiempo=2.721s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=8000, freq=20, tiempo=5.421s
+  ✅ SFC-Opt guardado: directsum_Morton, N=9000, freq=10, tiempo=3.965s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=9000, freq=5, tiempo=7.418s
+  ✅ SFC-Opt guardado: directsum_Morton, N=10000, freq=15, tiempo=4.873s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=10000, freq=20, tiempo=8.202s
+  ✅ SFC-Opt guardado: directsum_Morton, N=12000, freq=15, tiempo=6.689s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=12000, freq=5, tiempo=12.049s
+  ✅ SFC-Opt guardado: directsum_Morton, N=15000, freq=10, tiempo=10.297s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=15000, freq=5, tiempo=19.325s
+  ✅ SFC-Opt guardado: directsum_Morton, N=18000, freq=5, tiempo=13.686s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=18000, freq=5, tiempo=27.065s
+  ✅ SFC-Opt guardado: directsum_Morton, N=20000, freq=10, tiempo=16.902s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=20000, freq=5, tiempo=32.421s
+  ✅ SFC-Opt guardado: directsum_Morton, N=25000, freq=5, tiempo=23.780s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=25000, freq=50, tiempo=50.352s
+  ✅ SFC-Opt guardado: directsum_Morton, N=30000, freq=5, tiempo=34.813s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=30000, freq=5, tiempo=72.149s
+  ✅ SFC-Opt guardado: directsum_Morton, N=35000, freq=5, tiempo=46.029s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=35000, freq=20, tiempo=96.562s
+  ✅ SFC-Opt guardado: directsum_Morton, N=40000, freq=5, tiempo=59.598s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=40000, freq=5, tiempo=127.050s
+  ✅ SFC-Opt guardado: directsum_Morton, N=45000, freq=5, tiempo=76.949s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=45000, freq=20, tiempo=159.030s
+  ✅ SFC-Opt guardado: directsum_Morton, N=50000, freq=5, tiempo=95.104s
+  ✅ SFC-Opt guardado: directsum_Hilbert, N=50000, freq=50, tiempo=196.237s
+📈 directsum_Morton:
+  - Normal: 0 puntos
+  - SFC-Opt: 26 puntos
+  - Frecuencias óptimas: 26 puntos
+  - Datos por frecuencia: 130 puntos
+  - Muestra de frecuencias: [(1000, 15), (1200, 15), (1500, 50), (1800, 50), (2000, 20)]
+📈 directsum_Hilbert:
+  - Normal: 0 puntos
+  - SFC-Opt: 26 puntos
+  - Frecuencias óptimas: 26 puntos
+  - Datos por frecuencia: 130 puntos
+  - Muestra de frecuencias: [(1000, 50), (1200, 50), (1500, 5), (1800, 15), (2000, 5)]
+
+📊 Total de puntos de datos: 312
+
+📊 Datos organizados y listos para graficar
+📊 Generando gráficos...
+📊 Generando grilla de gráficos de frecuencia óptima...
+✅ Grilla de frecuencia óptima guardada: results/cpu_experiments_20250622_102235/optimal_frequency_vs_n_grid.png
+📊 Generando grilla de gráficos de rendimiento vs frecuencia...
+✅ Grilla de rendimiento vs frecuencia guardada: results/cpu_experiments_20250622_102235/performance_vs_frequency_grid.png
+📊 Generando grilla de gráficos de speedup...
+✅ Grilla de speedup guardada: results/cpu_experiments_20250622_102235/speedup_curves_grid.png
+✅ Gráficos generados exitosamente!
+
+📈 RESUMEN ESTADÍSTICO:
+
+🔍 directsum_Morton:
+  - Rango de N: 1000 - 50000
+  - Frecuencias óptimas: 5 - 50
+  - Frecuencia promedio: 12.9
+  - Total de puntos: 26
+
+🔍 directsum_Hilbert:
+  - Rango de N: 1000 - 50000
+  - Frecuencias óptimas: 5 - 50
+  - Frecuencia promedio: 16.9
+  - Total de puntos: 26
+
+✅ Experimentación completada! Resultados en: results/cpu_experiments_20250622_102235

@@ -21,127 +21,324 @@ class SFCDynamicReorderingStrategy
 private:
     double reorderTime;
     double postReorderSimTime;
+    double lastSimTime;
     double updateTime;
     double degradationRate;
 
     int iterationsSinceReorder;
     int currentOptimalFrequency;
+    int iterationCounter;
+    int consecutiveSkips;
 
     int metricsWindowSize;
     std::deque<double> reorderTimeHistory;
     std::deque<double> postReorderSimTimeHistory;
     std::deque<double> simulationTimeHistory;
 
+    bool isInitialStageDone;
+    int initialSampleSize;
+    double initialPerformanceGain;
+
+    double reorderCostScale;
+    double performanceGainScale;
+
+    double movingAverageRatio;
+    int stableIterations;
+    bool hasPerformancePlateau;
+
+    bool useFixedReordering;
+    int fixedReorderFrequency;
+
     int computeOptimalFrequency(int totalIterations)
     {
 
-        double determinant = 1.0 - 2.0 * (updateTime - reorderTime) / degradationRate;
+        if (simulationTimeHistory.size() < 3)
+        {
+            return 15;
+        }
+
+        double recent = simulationTimeHistory.front();
+        double oldest = simulationTimeHistory.back();
+        int historySize = simulationTimeHistory.size();
+        double measuredDegradation = (recent - oldest) / std::max(1, historySize - 1);
+
+        if (measuredDegradation > 0.001 && historySize > 5)
+        {
+
+            degradationRate = degradationRate * 0.7 + measuredDegradation * 0.3;
+        }
+
+        double effectiveDegradationRate = std::max(0.001, degradationRate);
+
+        double effectiveReorderTime = reorderTime * reorderCostScale;
+
+        if (hasPerformancePlateau && stableIterations > 20)
+        {
+            effectiveReorderTime *= 1.5;
+        }
+
+        double determinant = 1.0 - 2.0 * (updateTime - effectiveReorderTime) / (effectiveDegradationRate + 0.00001);
 
         if (determinant < 0)
-            return 10;
+            return 15;
 
         double optNu = -1.0 + sqrt(determinant);
 
-        int nu1 = static_cast<int>(optNu);
-        int nu2 = nu1 + 1;
+        optNu = std::max(5.0, std::min(100.0, optNu));
 
-        if (nu1 <= 0)
-            return 1;
+        int optimalFreq = static_cast<int>(optNu);
 
-        double time1 = ((nu1 * nu1 * degradationRate / 2.0) + nu1 * (updateTime + postReorderSimTime) +
-                        (reorderTime + postReorderSimTime)) *
-                       totalIterations / (nu1 + 1.0);
-        double time2 = ((nu2 * nu2 * degradationRate / 2.0) + nu2 * (updateTime + postReorderSimTime) +
-                        (reorderTime + postReorderSimTime)) *
-                       totalIterations / (nu2 + 1.0);
+        if (reorderTime > 5.0 * postReorderSimTime && optimalFreq < 20)
+        {
+            optimalFreq = 20;
+        }
 
-        return time1 < time2 ? nu1 : nu2;
+        if (movingAverageRatio > 1.1)
+        {
+
+            optimalFreq = std::max(5, static_cast<int>(optimalFreq * 0.9));
+        }
+        else if (movingAverageRatio < 1.02 && optimalFreq < 50)
+        {
+
+            optimalFreq = std::min(100, static_cast<int>(optimalFreq * 1.1));
+        }
+
+        return optimalFreq;
+    }
+
+    bool isReorderingBeneficial()
+    {
+        if (simulationTimeHistory.size() < 3)
+            return true;
+
+        double avgPerformanceBeforeReorder = 0.0;
+        double avgPerformanceAfterReorder = 0.0;
+        int countBefore = 0;
+        int countAfter = 0;
+
+        for (int i = std::min(3, (int)simulationTimeHistory.size() - 1); i < simulationTimeHistory.size(); i++)
+        {
+            avgPerformanceBeforeReorder += simulationTimeHistory[i];
+            countBefore++;
+        }
+
+        for (int i = 0; i < std::min(3, (int)simulationTimeHistory.size()); i++)
+        {
+            avgPerformanceAfterReorder += simulationTimeHistory[i];
+            countAfter++;
+        }
+
+        if (countBefore > 0)
+            avgPerformanceBeforeReorder /= countBefore;
+        if (countAfter > 0)
+            avgPerformanceAfterReorder /= countAfter;
+
+        if (countBefore == 0 || countAfter == 0)
+            return true;
+
+        double benefitRatio = avgPerformanceBeforeReorder / avgPerformanceAfterReorder;
+
+        movingAverageRatio = movingAverageRatio * 0.8 + benefitRatio * 0.2;
+
+        if (std::abs(benefitRatio - 1.0) < 0.03)
+        {
+            stableIterations++;
+            if (stableIterations > 10)
+            {
+                hasPerformancePlateau = true;
+            }
+        }
+        else
+        {
+            stableIterations = std::max(0, stableIterations - 1);
+            if (stableIterations < 5)
+            {
+                hasPerformancePlateau = false;
+            }
+        }
+
+        if (benefitRatio > 1.05)
+        {
+
+            reorderCostScale = std::max(0.6, reorderCostScale * 0.95);
+            performanceGainScale = std::min(1.1, performanceGainScale * 1.05);
+            return true;
+        }
+        else if (benefitRatio < 0.95)
+        {
+
+            reorderCostScale = std::min(1.5, reorderCostScale * 1.05);
+            performanceGainScale = std::max(0.9, performanceGainScale * 0.95);
+            return false;
+        }
+
+        return benefitRatio >= 1.0;
+    }
+
+public:
+    SFCDynamicReorderingStrategy(int windowSize = 10, bool fixedReordering = false, int reorderFreq = 10)
+        : reorderTime(0.0),
+          postReorderSimTime(0.0),
+          lastSimTime(0.0),
+          updateTime(0.0),
+          degradationRate(0.0005),
+          iterationsSinceReorder(0),
+          currentOptimalFrequency(15),
+          iterationCounter(0),
+          consecutiveSkips(0),
+          metricsWindowSize(windowSize),
+          isInitialStageDone(false),
+          initialSampleSize(5),
+          initialPerformanceGain(0.0),
+          reorderCostScale(0.8),
+          performanceGainScale(1.0),
+          movingAverageRatio(1.0),
+          stableIterations(0),
+          hasPerformancePlateau(false),
+          useFixedReordering(fixedReordering),
+          fixedReorderFrequency(reorderFreq)
+    {
+        if (useFixedReordering) {
+            currentOptimalFrequency = fixedReorderFrequency;
+            isInitialStageDone = true; // Skip initial stage for fixed reordering
+        }
     }
 
     void updateMetrics(double newReorderTime, double newSimTime)
     {
+        // For fixed reordering, just update the counters but not the adaptive strategy
+        lastSimTime = newSimTime;
+        iterationCounter++;
 
         if (newReorderTime > 0)
         {
-            reorderTimeHistory.push_back(newReorderTime);
-            if (reorderTimeHistory.size() > metricsWindowSize)
-            {
-                reorderTimeHistory.pop_front();
+            if (!useFixedReordering) {
+                reorderTime = reorderTime * 0.7 + newReorderTime * 0.3;
             }
-
-            reorderTime = std::accumulate(reorderTimeHistory.begin(), reorderTimeHistory.end(), 0.0) /
-                          reorderTimeHistory.size();
+            postReorderSimTime = newSimTime;
+            iterationsSinceReorder = 0;
         }
 
-        simulationTimeHistory.push_back(newSimTime);
-        if (simulationTimeHistory.size() > metricsWindowSize)
+        simulationTimeHistory.push_front(newSimTime);
+        while (simulationTimeHistory.size() > metricsWindowSize)
+            simulationTimeHistory.pop_back();
+
+        // Only do adaptive analysis if not using fixed reordering
+        if (!useFixedReordering && newReorderTime > 0 && simulationTimeHistory.size() > 1)
         {
-            simulationTimeHistory.pop_front();
+            if (!isInitialStageDone && iterationCounter >= initialSampleSize * 2)
+            {
+                double avgBefore = 0.0, avgAfter = 0.0;
+                int beforeCount = 0, afterCount = 0;
+
+                for (int i = initialSampleSize; i < std::min(initialSampleSize * 2, (int)simulationTimeHistory.size()); i++)
+                {
+                    avgBefore += simulationTimeHistory[i];
+                    beforeCount++;
+                }
+
+                for (int i = 0; i < initialSampleSize && i < simulationTimeHistory.size(); i++)
+                {
+                    avgAfter += simulationTimeHistory[i];
+                    afterCount++;
+                }
+
+                if (beforeCount > 0 && afterCount > 0)
+                {
+                    avgBefore /= beforeCount;
+                    avgAfter /= afterCount;
+                    initialPerformanceGain = (avgBefore - avgAfter) / avgBefore;
+
+                    if (initialPerformanceGain > 0.01)
+                    {
+                        degradationRate = initialPerformanceGain / (initialSampleSize * 4.0);
+                    }
+
+                    isInitialStageDone = true;
+                }
+            }
         }
 
-        if (iterationsSinceReorder == 1)
+        if (!useFixedReordering && simulationTimeHistory.size() > 3 && iterationsSinceReorder > 1)
         {
-            postReorderSimTimeHistory.push_back(newSimTime);
-            if (postReorderSimTimeHistory.size() > metricsWindowSize)
+            double recent = simulationTimeHistory[0];
+            double previous = simulationTimeHistory[1];
+            double diff = recent - previous;
+
+            if (diff > 0.01 && diff < previous * 0.3)
             {
-                postReorderSimTimeHistory.pop_front();
-            }
+                double newRate = diff;
 
-            postReorderSimTime = std::accumulate(postReorderSimTimeHistory.begin(),
-                                                 postReorderSimTimeHistory.end(), 0.0) /
-                                 postReorderSimTimeHistory.size();
-        }
-
-        if (simulationTimeHistory.size() >= 3)
-        {
-
-            int n = std::min(5, static_cast<int>(simulationTimeHistory.size()));
-            double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-
-            for (int i = 0; i < n; i++)
-            {
-                double x = i;
-                double y = simulationTimeHistory[simulationTimeHistory.size() - n + i];
-                sumX += x;
-                sumY += y;
-                sumXY += x * y;
-                sumX2 += x * x;
-            }
-
-            double slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
-            if (slope > 0)
-            {
-                degradationRate = slope;
+                degradationRate = degradationRate * 0.9 + newRate * 0.1;
             }
         }
+
+        iterationsSinceReorder++;
     }
 
-public:
-    SFCDynamicReorderingStrategy(int windowSize = 10)
-        : reorderTime(0.0),
-          postReorderSimTime(0.0),
-          updateTime(0.0),
-          degradationRate(0.001),
-          iterationsSinceReorder(0),
-          currentOptimalFrequency(10),
-          metricsWindowSize(windowSize)
-    {
-    }
-
-    bool shouldReorder(double lastSimTime = 0.0, double lastReorderTime = 0.0)
+    bool shouldReorder(double lastSimTime, double predictedReorderTime)
     {
         iterationsSinceReorder++;
+        
+        updateMetrics(0.0, lastSimTime);
 
-        updateMetrics(lastReorderTime, lastSimTime);
-
-        if (iterationsSinceReorder % 10 == 0)
-        {
-            currentOptimalFrequency = computeOptimalFrequency(1000);
-
-            currentOptimalFrequency = std::max(1, std::min(100, currentOptimalFrequency));
+        // If using fixed reordering, just use the fixed frequency
+        if (useFixedReordering) {
+            if (iterationsSinceReorder >= fixedReorderFrequency) {
+                iterationsSinceReorder = 0;
+                return true;
+            }
+            return false;
         }
 
-        bool shouldReorder = iterationsSinceReorder >= currentOptimalFrequency;
+        // Otherwise use dynamic reordering strategy
+        if (!isInitialStageDone)
+        {
+            bool shouldReorder = (iterationsSinceReorder >= initialSampleSize);
+            if (shouldReorder)
+                iterationsSinceReorder = 0;
+            return shouldReorder;
+        }
+
+        if (iterationsSinceReorder % 5 == 0)
+        {
+            currentOptimalFrequency = computeOptimalFrequency(1000);
+            currentOptimalFrequency = std::max(5, std::min(150, currentOptimalFrequency));
+        }
+
+        bool shouldReorder = false;
+
+        if (iterationsSinceReorder >= currentOptimalFrequency)
+        {
+            if (isReorderingBeneficial())
+            {
+                shouldReorder = true;
+                consecutiveSkips = 0;
+            }
+            else
+            {
+                consecutiveSkips++;
+                if (consecutiveSkips >= 3)
+                {
+                    shouldReorder = true;
+                    consecutiveSkips = 0;
+                }
+            }
+        }
+
+        if (!shouldReorder && iterationsSinceReorder > currentOptimalFrequency / 2)
+        {
+            if (simulationTimeHistory.size() >= 3)
+            {
+                double recent = simulationTimeHistory[0];
+                double previous = simulationTimeHistory[std::min(2, (int)simulationTimeHistory.size() - 1)];
+                if (recent > previous * 1.3)
+                {
+                    shouldReorder = true;
+                }
+            }
+        }
 
         if (shouldReorder)
         {
@@ -153,8 +350,7 @@ public:
 
     void updateMetrics(double sortTime)
     {
-
-        updateMetrics(sortTime, 0.0);
+        updateMetrics(sortTime, lastSimTime);
     }
 
     void setWindowSize(int windowSize)
@@ -164,10 +360,27 @@ public:
             metricsWindowSize = windowSize;
         }
     }
+    
+    void setFixedReordering(bool fixed, int frequency) {
+        useFixedReordering = fixed;
+        if (fixed && frequency > 0) {
+            fixedReorderFrequency = frequency;
+            currentOptimalFrequency = frequency;
+            isInitialStageDone = true; // Skip initial stage for fixed reordering
+        }
+    }
+
+    bool isFixedReordering() const {
+        return useFixedReordering;
+    }
+
+    int getFixedReorderFrequency() const {
+        return fixedReorderFrequency;
+    }
 
     int getOptimalFrequency() const
     {
-        return currentOptimalFrequency;
+        return useFixedReordering ? fixedReorderFrequency : currentOptimalFrequency;
     }
 
     double getDegradationRate() const
@@ -175,12 +388,33 @@ public:
         return degradationRate;
     }
 
+    double getPerformanceGain() const
+    {
+        return initialPerformanceGain;
+    }
+
+    double getPerformanceRatio() const
+    {
+        return movingAverageRatio;
+    }
+
+    bool isPerformancePlateau() const
+    {
+        return hasPerformancePlateau;
+    }
+
     void reset()
     {
         iterationsSinceReorder = 0;
+        iterationCounter = 0;
+        consecutiveSkips = 0;
         reorderTimeHistory.clear();
         postReorderSimTimeHistory.clear();
         simulationTimeHistory.clear();
+        isInitialStageDone = false;
+        movingAverageRatio = 1.0;
+        stableIterations = 0;
+        hasPerformancePlateau = false;
     }
 };
 
@@ -729,11 +963,33 @@ __global__ void CalculateEnergiesKernel(Body *bodies, int nBodies, double *d_pot
     }
 }
 
+// Add the missing updatePositionsAndVelocities kernel
+__global__ void updatePositionsAndVelocities(Body *bodies, int nBodies, double dt, double domainSize)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nBodies || !bodies[i].isDynamic)
+        return;
+    
+    // Update velocity using current acceleration
+    bodies[i].velocity.x += bodies[i].acceleration.x * dt;
+    bodies[i].velocity.y += bodies[i].acceleration.y * dt;
+    bodies[i].velocity.z += bodies[i].acceleration.z * dt;
+    
+    // Update position using updated velocity
+    bodies[i].position.x += bodies[i].velocity.x * dt;
+    bodies[i].position.y += bodies[i].velocity.y * dt;
+    bodies[i].position.z += bodies[i].velocity.z * dt;
+    
+    // Apply periodic boundary conditions
+    bodies[i].position = applyPeriodicPosition_device(bodies[i].position, domainSize);
+}
+
 class SFCDirectSumGPU
 {
 private:
     Body *h_bodies = nullptr;
     Body *d_bodies = nullptr;
+    Vector *d_acceleration = nullptr;
     int nBodies;
     bool useSFC;
     sfc::BodySorter *sorter;
@@ -759,6 +1015,9 @@ private:
     double *h_potentialEnergy;
     double *h_kineticEnergy;
 
+    float minTimeMs;
+    float maxTimeMs;
+
     void updateBoundingBox()
     {
         // Use fixed domain bounds for periodic boundary conditions
@@ -781,6 +1040,10 @@ private:
         updateBoundingBox();
 
         d_orderedIndices = sorter->sortBodies(d_bodies, minBound, maxBound);
+    }
+
+    void sortBodiesBySFC() {
+        orderBodiesBySFC();
     }
 
     void initializeDistribution(BodyDistribution dist, MassDistribution massDist, unsigned int seed)
@@ -901,7 +1164,8 @@ private:
     }
 
 public:
-    SFCDirectSumGPU(int numBodies, bool enableSFC = true, int reorderFreq = 10, sfc::CurveType type = sfc::CurveType::MORTON, bool dynamicReordering = true)
+    SFCDirectSumGPU(int numBodies, bool enableSFC = true, sfc::CurveType type = sfc::CurveType::MORTON, 
+                   bool dynamicReordering = true, bool fixedReordering = false, int reorderFreq = 10)
         : nBodies(numBodies),
           useSFC(enableSFC),
           d_orderedIndices(nullptr),
@@ -909,15 +1173,18 @@ public:
           reorderFrequency(reorderFreq),
           iterationCounter(0),
           useDynamicReordering(dynamicReordering),
-          reorderingStrategy(10),
+          reorderingStrategy(10, fixedReordering, reorderFreq),
           potentialEnergy(0.0), kineticEnergy(0.0),
           totalEnergyAvg(0.0), potentialEnergyAvg(0.0), kineticEnergyAvg(0.0),
           d_potentialEnergy(nullptr), d_kineticEnergy(nullptr),
-          h_potentialEnergy(nullptr), h_kineticEnergy(nullptr)
+          h_potentialEnergy(nullptr), h_kineticEnergy(nullptr),
+          minTimeMs(std::numeric_limits<float>::max()),
+          maxTimeMs(0.0f)
     {
 
         h_bodies = new Body[nBodies];
         CHECK_CUDA_ERROR(cudaMalloc(&d_bodies, nBodies * sizeof(Body)));
+        CHECK_CUDA_ERROR(cudaMalloc(&d_acceleration, nBodies * sizeof(Vector)));
 
         if (useSFC)
         {
@@ -946,7 +1213,7 @@ public:
                       << (useDynamicReordering ? "dynamic" : "fixed") << " reordering";
             if (!useDynamicReordering)
             {
-                std::cout << " frequency " << reorderFrequency;
+                std::cout << " frequency " << reorderFreq;
             }
             std::cout << " and curve type "
                       << (curveType == sfc::CurveType::MORTON ? "MORTON" : "HILBERT") << std::endl;
@@ -963,6 +1230,8 @@ public:
         delete[] h_bodies;
         if (d_bodies)
             CHECK_CUDA_ERROR(cudaFree(d_bodies));
+        if (d_acceleration)
+            CHECK_CUDA_ERROR(cudaFree(d_acceleration));
         if (sorter)
             delete sorter;
     }
@@ -993,79 +1262,159 @@ public:
         CHECK_LAST_CUDA_ERROR();
     }
 
-    void update()
+    void update(bool calculateEnergy = true)
     {
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        bool didReorder = false;
+        float reorderTime = 0.0f;
+        
+        if (useSFC && shouldReorder())
         {
-            CudaTimer timer(metrics.totalTimeMs);
-
-            bool shouldReorder = false;
-            if (useSFC)
-            {
-                if (useDynamicReordering)
-                {
-
-                    shouldReorder = reorderingStrategy.shouldReorder(metrics.forceTimeMs, metrics.reorderTimeMs);
-                }
-                else
-                {
-
-                    shouldReorder = (iterationCounter >= reorderFrequency);
-                }
-
-                if (shouldReorder)
-                {
-                    orderBodiesBySFC();
-                    iterationCounter = 0;
-                }
-            }
-
-            computeForces();
-            iterationCounter++;
-
-            if (useSFC && useDynamicReordering)
-            {
-                reorderingStrategy.updateMetrics(shouldReorder ? metrics.reorderTimeMs : 0.0);
-            }
+            auto reorderStart = std::chrono::high_resolution_clock::now();
+            
+            // Ordenar partículas según SFC
+            cudaDeviceSynchronize();
+            sortBodiesBySFC();
+            cudaDeviceSynchronize();
+            
+            auto reorderEnd = std::chrono::high_resolution_clock::now();
+            reorderTime = std::chrono::duration<float, std::milli>(reorderEnd - reorderStart).count();
+            metrics.reorderTimeMs = reorderTime;
+            didReorder = true;
         }
-
-        // Calcular energías por separado (no afecta el tiempo de simulación)
-        calculateEnergies();
+        
+        // Reset forces
+        cudaMemset(d_acceleration, 0, nBodies * sizeof(Vector));
+        
+        // Compute forces
+        auto forceStart = std::chrono::high_resolution_clock::now();
+        
+        computeForces();
+        
+        auto forceEnd = std::chrono::high_resolution_clock::now();
+        float forceTime = std::chrono::duration<float, std::milli>(forceEnd - forceStart).count();
+        metrics.forceTimeMs = forceTime;
+        
+        // Update positions and velocities
+        updatePositionsAndVelocities<<<(nBodies + g_blockSize - 1) / g_blockSize, g_blockSize>>>(
+            d_bodies, nBodies, DT, g_domainSize);
+        
+        // Calcular energía si es necesario
+        if (calculateEnergy) {
+            calculateSystemEnergy();
+        }
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        float totalTime = std::chrono::duration<float, std::milli>(end - start).count();
+        metrics.totalTimeMs = totalTime;
+        
+        // Update reordering strategy metrics if we did reorder
+        if (didReorder && useDynamicReordering) {
+            reorderingStrategy.updateMetrics(reorderTime, forceTime);
+        }
+        
+        // Track min and max times
+        minTimeMs = std::min(minTimeMs, totalTime);
+        maxTimeMs = std::max(maxTimeMs, totalTime);
     }
 
-    void printPerformance()
+    void printPerformance(bool calculateEnergy = true)
     {
-        printf("Performance Metrics:\n");
+        printf("Performance Summary:\n");
+        printf("  Average time per step: %.2f ms\n", metrics.totalTimeMs);
+        printf("  Min time: %.2f ms\n", minTimeMs);
+        printf("  Max time: %.2f ms\n", maxTimeMs);
         printf("  Force calculation: %.2f ms\n", metrics.forceTimeMs);
         if (useSFC)
         {
             printf("  Reordering: %.2f ms\n", metrics.reorderTimeMs);
-            if (useDynamicReordering)
-            {
-                printf("  Optimal reorder freq: %d\n", reorderingStrategy.getOptimalFrequency());
+            printf("  Fixed reordering: %s\n", reorderingStrategy.isFixedReordering() ? "Yes" : "No");
+            printf("  Optimal reorder freq: %d\n", reorderingStrategy.getOptimalFrequency());
+            if (!reorderingStrategy.isFixedReordering()) {
                 printf("  Degradation rate: %.6f ms/iter\n", reorderingStrategy.getDegradationRate());
             }
         }
+        printf("  Compute forces: %.2f ms\n", metrics.forceTimeMs);  // Duplicate for parser compatibility
         printf("  Total update: %.2f ms\n", metrics.totalTimeMs);
+        
+        // Mostrar información de energía sólo si se calculó
+        if (calculateEnergy) {
+            printf("Average Energy Values:\n");
+            printf("  Potential Energy: %.6e\n", potentialEnergy);
+            printf("  Kinetic Energy:   %.6e\n", kineticEnergy);
+            printf("  Total Energy:     %.6e\n", potentialEnergy + kineticEnergy);
+        }
     }
 
-    void runSimulation(int numIterations, int printFreq = 10)
+    void runSimulation(int numIterations, bool calculateEnergy = true, int printFreq = 10)
     {
-        printf("Starting simulation with %d bodies for %d iterations\n", nBodies, numIterations);
+        // Solo mostrar parámetros iniciales
+        printf("DirectSum GPU Simulation\n");
+        printf("Bodies: %d\n", nBodies);
+        printf("Iterations: %d\n", numIterations);
+        printf("Block size: %d\n", g_blockSize);
+        printf("Domain size: %e\n", g_domainSize);
+        printf("Calculate energy: %s\n", calculateEnergy ? "Yes" : "No");
         printf("Using SFC: %s\n", useSFC ? "Yes" : "No");
-        if (useSFC)
-            printf("Reorder frequency: %d iterations\n", reorderFrequency);
+        if (useSFC) {
+            printf("Curve type: %s\n", curveType == sfc::CurveType::MORTON ? "MORTON" : "HILBERT");
+            printf("Fixed reordering: %s\n", reorderingStrategy.isFixedReordering() ? "Yes" : "No");
+            if (reorderingStrategy.isFixedReordering()) {
+                printf("Reordering frequency: %d\n", reorderingStrategy.getFixedReorderFrequency());
+            }
+        }
 
         float totalTime = 0.0f;
+        minTimeMs = std::numeric_limits<float>::max();
+        maxTimeMs = 0.0f;
 
+        // Ejecutar todas las iteraciones sin mostrar progreso
         for (int i = 0; i < numIterations; i++)
         {
-            update();
+            update(calculateEnergy);
             totalTime += metrics.totalTimeMs;
+            
+            // Track min and max times
+            minTimeMs = std::min(minTimeMs, metrics.totalTimeMs);
+            maxTimeMs = std::max(maxTimeMs, metrics.totalTimeMs);
+        }
+        
+        // Calcular promedios para energía si es necesario
+        if (numIterations > 0 && calculateEnergy)
+        {
+            potentialEnergyAvg /= numIterations;
+            kineticEnergyAvg /= numIterations;
+            totalEnergyAvg /= numIterations;
+        }
+        
+        // Solo mostrar el resumen final
+        printf("Performance Summary:\n");
+        printf("  Average time per step: %.2f ms\n", metrics.totalTimeMs);
+        printf("  Min time: %.2f ms\n", minTimeMs);
+        printf("  Max time: %.2f ms\n", maxTimeMs);
+        printf("  Force calculation: %.2f ms\n", metrics.forceTimeMs);
+        printf("  Compute forces: %.2f ms\n", metrics.forceTimeMs);
+        if (useSFC)
+        {
+            printf("  Reordering: %.2f ms\n", metrics.reorderTimeMs);
+        }
+        
+        if (calculateEnergy)
+        {
+            printf("Average Energy Values:\n");
+            printf("  Potential Energy: %.6e\n", potentialEnergy);
+            printf("  Kinetic Energy:   %.6e\n", kineticEnergy);
+            printf("  Total Energy:     %.6e\n", potentialEnergy + kineticEnergy);
+        }
 
-            if (i % printFreq == 0 || i == numIterations - 1)
-            {
-                printf("Iteration %d/%d (%.1f%%)\n", i + 1, numIterations, (i + 1) * 100.0f / numIterations);
-                printPerformance();
+        if (useSFC)
+        {
+            printf("SFC Configuration:\n");
+            printf("  Fixed reordering: %s\n", reorderingStrategy.isFixedReordering() ? "Yes" : "No");
+            printf("  Optimal reorder freq: %d\n", reorderingStrategy.getOptimalFrequency());
+            if (!reorderingStrategy.isFixedReordering()) {
+                printf("  Degradation rate: %.6f ms/s\n", reorderingStrategy.getDegradationRate());
             }
         }
     }
@@ -1095,7 +1444,69 @@ public:
     double getKineticEnergyAvg() const { return kineticEnergyAvg; }
     double getTotalEnergyAvg() const { return totalEnergyAvg; }
 
+    // Método para determinar si se debe reordenar
+    bool shouldReorder()
+    {
+        if (!useSFC) return false;
+        
+        if (useDynamicReordering)
+        {
+            return reorderingStrategy.shouldReorder(metrics.forceTimeMs, metrics.reorderTimeMs);
+        }
+        else
+        {
+            return (iterationCounter++ >= reorderFrequency);
+        }
+    }
 
+    // Método para calcular la energía del sistema
+    void calculateSystemEnergy()
+    {
+        // Copiar los cuerpos de vuelta a la CPU para calcular la energía
+        cudaMemcpy(h_bodies, d_bodies, nBodies * sizeof(Body), cudaMemcpyDeviceToHost);
+        
+        potentialEnergy = 0.0;
+        kineticEnergy = 0.0;
+        
+        // Calcular energía cinética
+        for (int i = 0; i < nBodies; i++) {
+            if (h_bodies[i].isDynamic) {
+                double vSquared = h_bodies[i].velocity.lengthSquared();
+                kineticEnergy += 0.5 * h_bodies[i].mass * vSquared;
+            }
+        }
+        
+        // Calcular energía potencial
+        for (int i = 0; i < nBodies; i++) {
+            for (int j = i + 1; j < nBodies; j++) {
+                Vector r = h_bodies[j].position - h_bodies[i].position;
+                
+                // Aplicar condiciones de frontera periódicas
+                if (g_domainSize > 0) {
+                    double halfDomain = g_domainSize * 0.5;
+                    
+                    if (r.x > halfDomain) r.x -= g_domainSize;
+                    else if (r.x < -halfDomain) r.x += g_domainSize;
+                    
+                    if (r.y > halfDomain) r.y -= g_domainSize;
+                    else if (r.y < -halfDomain) r.y += g_domainSize;
+                    
+                    if (r.z > halfDomain) r.z -= g_domainSize;
+                    else if (r.z < -halfDomain) r.z += g_domainSize;
+                }
+                
+                double distSqr = r.lengthSquared() + 1e-6; // Evitar división por cero
+                double dist = sqrt(distSqr);
+                
+                potentialEnergy -= GRAVITY * h_bodies[i].mass * h_bodies[j].mass / dist;
+            }
+        }
+        
+        // Actualizar promedios para reportes
+        potentialEnergyAvg = (potentialEnergyAvg * 0.9) + (potentialEnergy * 0.1);
+        kineticEnergyAvg = (kineticEnergyAvg * 0.9) + (kineticEnergy * 0.1);
+        totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
+    }
 };
 
 bool dirExists(const std::string &dirName)
@@ -1133,14 +1544,14 @@ bool ensureDirExists(const std::string &dirPath)
     }
 }
 
-int main(int argc, char **argv)
+int main(int argc, char *argv[])
 {
     ArgumentParser parser("DirectSum GPU Simulation");
     
-    // Add arguments with help messages and default values
     parser.add_argument("n", "Number of bodies", 10000);
     parser.add_flag("nosfc", "Disable Space-Filling Curve ordering");
     parser.add_argument("freq", "Reordering frequency for fixed mode", 10);
+    parser.add_argument("fixreorder", "Use fixed reordering frequency (1=yes, 0=no)", 0);
     parser.add_argument("dist", "Body distribution (galaxy, solar, uniform, random)", std::string("galaxy"));
     parser.add_argument("mass", "Mass distribution (uniform, normal)", std::string("normal"));
     parser.add_argument("seed", "Random seed", 42);
@@ -1148,6 +1559,7 @@ int main(int argc, char **argv)
     parser.add_argument("s", "Number of iterations", 100);
     parser.add_argument("block", "CUDA block size", DEFAULT_BLOCK_SIZE);
     parser.add_argument("l", "Domain size L for periodic boundary conditions", DEFAULT_DOMAIN_SIZE);
+    parser.add_argument("energy", "Calculate system energy (1=yes, 0=no)", 1);
     
     // Parse command line arguments
     try {
@@ -1162,6 +1574,8 @@ int main(int argc, char **argv)
     int nBodies = parser.get<int>("n");
     bool useSFC = !parser.get<bool>("nosfc");
     int reorderFreq = parser.get<int>("freq");
+    bool useFixedReordering = parser.get<int>("fixreorder") != 0;
+    bool calculateEnergy = parser.get<int>("energy") != 0;
     
     // Parse distribution type
     std::string distStr = parser.get<std::string>("dist");
@@ -1192,40 +1606,39 @@ int main(int argc, char **argv)
     
     int numIterations = parser.get<int>("s");
     int blockSize = parser.get<int>("block");
-    bool useDynamicReordering = true; // Always use dynamic reordering
     double domainSize = parser.get<double>("l");
+    
+    // Set dynamic reordering based on fixed reordering parameter
+    bool useDynamicReordering = useSFC && !useFixedReordering;
 
     g_blockSize = blockSize;
     g_domainSize = domainSize;
 
-    int deviceCount;
-    cudaGetDeviceCount(&deviceCount);
-    if (deviceCount == 0)
-    {
-        std::cerr << "No CUDA devices found!" << std::endl;
-        return 1;
-    }
-
-    cudaDeviceProp deviceProp;
-    cudaGetDeviceProperties(&deviceProp, 0);
-    std::cout << "Using GPU: " << deviceProp.name << std::endl;
+    // Print simulation parameters
     std::cout << "DirectSum GPU Simulation" << std::endl;
     std::cout << "Bodies: " << nBodies << std::endl;
     std::cout << "Iterations: " << numIterations << std::endl;
-    std::cout << "Domain size (periodic boundaries): " << std::scientific << domainSize << std::endl;
+    std::cout << "Block size: " << blockSize << std::endl;
+    std::cout << "Domain size: " << std::scientific << domainSize << std::endl;
+    std::cout << "Calculate energy: " << (calculateEnergy ? "Yes" : "No") << std::endl;
     std::cout << "Using SFC: " << (useSFC ? "Yes" : "No") << std::endl;
     if (useSFC) {
         std::cout << "Curve type: " << (curveType == sfc::CurveType::HILBERT ? "HILBERT" : "MORTON") << std::endl;
+        std::cout << "Fixed reordering: " << (useFixedReordering ? "Yes" : "No") << std::endl;
+        if (useFixedReordering) {
+            std::cout << "Reordering frequency: " << reorderFreq << std::endl;
+        }
     }
 
     SFCDirectSumGPU simulation(
         nBodies,
         useSFC,
-        reorderFreq,
         curveType,
-        useDynamicReordering);
+        useDynamicReordering,
+        useFixedReordering,
+        reorderFreq);
 
-    simulation.runSimulation(numIterations);
+    simulation.runSimulation(numIterations, calculateEnergy);
 
     return 0;
 }

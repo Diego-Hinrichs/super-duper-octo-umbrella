@@ -419,6 +419,9 @@ namespace sfc
             hilbertSortRecursive(d_bodies, d_orderedIndices, d_tempIndices, 0, nBodies - 1, 
                                 maxBits - 1, 0, false, minBound, maxBound);
             
+            // Asegurar que todas las operaciones recursivas estén completas
+            cudaDeviceSynchronize();
+            
             cudaFree(d_tempIndices);
             return d_orderedIndices;
         }
@@ -589,6 +592,9 @@ private:
     int stableIterations;
     bool hasPerformancePlateau;
 
+    bool useFixedReordering;
+    int fixedReorderFrequency;
+
     int computeOptimalFrequency(int totalIterations)
     {
 
@@ -717,7 +723,7 @@ private:
     }
 
 public:
-    SFCDynamicReorderingStrategy(int windowSize = 10)
+    SFCDynamicReorderingStrategy(int windowSize = 10, bool fixedReordering = false, int reorderFreq = 10)
         : reorderTime(0.0),
           postReorderSimTime(0.0),
           lastSimTime(0.0),
@@ -735,19 +741,27 @@ public:
           performanceGainScale(1.0),
           movingAverageRatio(1.0),
           stableIterations(0),
-          hasPerformancePlateau(false)
+          hasPerformancePlateau(false),
+          useFixedReordering(fixedReordering),
+          fixedReorderFrequency(reorderFreq)
     {
+        if (useFixedReordering) {
+            currentOptimalFrequency = fixedReorderFrequency;
+            isInitialStageDone = true; // Skip initial stage for fixed reordering
+        }
     }
 
     void updateMetrics(double newReorderTime, double newSimTime)
     {
-
+        // For fixed reordering, just update the counters but not the adaptive strategy
         lastSimTime = newSimTime;
         iterationCounter++;
 
         if (newReorderTime > 0)
         {
-            reorderTime = reorderTime * 0.7 + newReorderTime * 0.3;
+            if (!useFixedReordering) {
+                reorderTime = reorderTime * 0.7 + newReorderTime * 0.3;
+            }
             postReorderSimTime = newSimTime;
             iterationsSinceReorder = 0;
         }
@@ -756,9 +770,9 @@ public:
         while (simulationTimeHistory.size() > metricsWindowSize)
             simulationTimeHistory.pop_back();
 
-        if (newReorderTime > 0 && simulationTimeHistory.size() > 1)
+        // Only do adaptive analysis if not using fixed reordering
+        if (!useFixedReordering && newReorderTime > 0 && simulationTimeHistory.size() > 1)
         {
-
             if (!isInitialStageDone && iterationCounter >= initialSampleSize * 2)
             {
                 double avgBefore = 0.0, avgAfter = 0.0;
@@ -792,7 +806,7 @@ public:
             }
         }
 
-        if (simulationTimeHistory.size() > 3 && iterationsSinceReorder > 1)
+        if (!useFixedReordering && simulationTimeHistory.size() > 3 && iterationsSinceReorder > 1)
         {
             double recent = simulationTimeHistory[0];
             double previous = simulationTimeHistory[1];
@@ -812,9 +826,19 @@ public:
     bool shouldReorder(double lastSimTime, double predictedReorderTime)
     {
         iterationsSinceReorder++;
-
+        
         updateMetrics(0.0, lastSimTime);
 
+        // If using fixed reordering, just use the fixed frequency
+        if (useFixedReordering) {
+            if (iterationsSinceReorder >= fixedReorderFrequency) {
+                iterationsSinceReorder = 0;
+                return true;
+            }
+            return false;
+        }
+
+        // Otherwise use dynamic reordering strategy
         if (!isInitialStageDone)
         {
             bool shouldReorder = (iterationsSinceReorder >= initialSampleSize);
@@ -833,7 +857,6 @@ public:
 
         if (iterationsSinceReorder >= currentOptimalFrequency)
         {
-
             if (isReorderingBeneficial())
             {
                 shouldReorder = true;
@@ -841,7 +864,6 @@ public:
             }
             else
             {
-
                 consecutiveSkips++;
                 if (consecutiveSkips >= 3)
                 {
@@ -853,7 +875,6 @@ public:
 
         if (!shouldReorder && iterationsSinceReorder > currentOptimalFrequency / 2)
         {
-
             if (simulationTimeHistory.size() >= 3)
             {
                 double recent = simulationTimeHistory[0];
@@ -875,7 +896,6 @@ public:
 
     void updateMetrics(double sortTime)
     {
-
         updateMetrics(sortTime, lastSimTime);
     }
 
@@ -886,10 +906,27 @@ public:
             metricsWindowSize = windowSize;
         }
     }
+    
+    void setFixedReordering(bool fixed, int frequency) {
+        useFixedReordering = fixed;
+        if (fixed && frequency > 0) {
+            fixedReorderFrequency = frequency;
+            currentOptimalFrequency = frequency;
+            isInitialStageDone = true; // Skip initial stage for fixed reordering
+        }
+    }
+
+    bool isFixedReordering() const {
+        return useFixedReordering;
+    }
+
+    int getFixedReorderFrequency() const {
+        return fixedReorderFrequency;
+    }
 
     int getOptimalFrequency() const
     {
-        return currentOptimalFrequency;
+        return useFixedReordering ? fixedReorderFrequency : currentOptimalFrequency;
     }
 
     double getDegradationRate() const
@@ -1047,6 +1084,9 @@ private:
         updateBoundsFromRoot();
 
         d_orderedIndices = sorter->sortBodies(d_bodies, minBound, maxBound);
+        
+        // Asegurar que todas las operaciones CUDA estén completas
+        cudaDeviceSynchronize();
     }
 
     void checkInitialization()
@@ -1188,7 +1228,9 @@ public:
         bool useSpaceFillingCurve = false,
         sfc::CurveType curve = sfc::CurveType::MORTON,
         bool dynamicReordering = true,
-        unsigned int seed = 1234)
+        unsigned int seed = 1234,
+        bool fixedReordering = false,
+        int reorderFreq = 10)
         : nBodies(numBodies),
           nNodes(numNodes),
           leafLimit(std::min(numNodes - 1, leafNodeLimit)),
@@ -1196,10 +1238,10 @@ public:
           sorter(nullptr),
           d_orderedIndices(nullptr),
           curveType(curve),
-          reorderFrequency(10),
+          reorderFrequency(reorderFreq),
           iterationCounter(0),
           useDynamicReordering(dynamicReordering),
-          reorderingStrategy(10),
+          reorderingStrategy(10, fixedReordering, reorderFreq),
           potentialEnergy(0.0),
           kineticEnergy(0.0),
           totalEnergyAvg(0.0),
@@ -1429,24 +1471,15 @@ public:
         printf("  Total update: %.2f ms\n", metrics.totalTimeMs);
     }
 
-    void runSimulation(int numIterations, int printFreq = 10)
+    void runSimulation(int numIterations, bool calculateEnergy)
     {
-
         double totalTime = 0.0;
-        minTimeMs = FLT_MAX;
+        // Use the class member variables directly instead of local variables
+        minTimeMs = std::numeric_limits<float>::max();
         maxTimeMs = 0.0f;
         potentialEnergyAvg = 0.0;
         kineticEnergyAvg = 0.0;
         totalEnergyAvg = 0.0;
-
-        std::cout << "Starting SFC Barnes-Hut GPU simulation..." << std::endl;
-        std::cout << "Bodies: " << nBodies << ", Nodes: " << nNodes << std::endl;
-        std::cout << "Theta parameter: " << g_theta << std::endl;
-        std::cout << "Domain size (periodic boundaries): " << std::scientific << g_domainSize << std::endl;
-        if (useSFC)
-            std::cout << "Using SFC ordering, curve type: " << (curveType == sfc::CurveType::MORTON ? "MORTON" : "HILBERT") << std::endl;
-        else
-            std::cout << "No SFC ordering used." << std::endl;
 
         auto startTime = std::chrono::high_resolution_clock::now();
 
@@ -1456,12 +1489,14 @@ public:
             update();
 
             // Calcular energías por separado (no afecta el tiempo de simulación)
-            calculateEnergies();
+            if (calculateEnergy) {
+                calculateEnergies();
+                potentialEnergyAvg += potentialEnergy;
+                kineticEnergyAvg += kineticEnergy;
+                totalEnergyAvg += (potentialEnergy + kineticEnergy);
+            }
 
-            potentialEnergyAvg += potentialEnergy;
-            kineticEnergyAvg += kineticEnergy;
-            totalEnergyAvg += (potentialEnergy + kineticEnergy);
-
+            // Update class member variables instead of local variables
             minTimeMs = std::min(minTimeMs, metrics.totalTimeMs);
             maxTimeMs = std::max(maxTimeMs, metrics.totalTimeMs);
 
@@ -1473,77 +1508,14 @@ public:
         auto endTime = std::chrono::high_resolution_clock::now();
         double simTimeMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
 
-        if (numIterations > 0)
+        if (numIterations > 0 && calculateEnergy)
         {
             potentialEnergyAvg /= numIterations;
             kineticEnergyAvg /= numIterations;
             totalEnergyAvg /= numIterations;
         }
 
-        printSummary(numIterations);
-    }
-
-    void run(int steps)
-    {
-        std::cout << "Running SFC Barnes-Hut GPU simulation for " << steps << " steps..." << std::endl;
-
-        float totalTime = 0.0f;
-        float totalForceTime = 0.0f;
-        float totalBuildTime = 0.0f;
-        float totalBboxTime = 0.0f;
-        float totalReorderTime = 0.0f;
-        float minTime = std::numeric_limits<float>::max();
-        float maxTime = 0.0f;
-        double totalPotentialEnergy = 0.0;
-        double totalKineticEnergy = 0.0;
-
-        for (int step = 0; step < steps; step++)
-        {
-            // Ejecutar la simulación (sin incluir el cálculo de energía en el tiempo)
-            update();
-            
-            // Calcular energías por separado (no afecta el tiempo de simulación)
-            calculateEnergies();
-
-            totalTime += metrics.totalTimeMs;
-            totalForceTime += metrics.forceTimeMs;
-            totalBuildTime += metrics.octreeTimeMs;
-            totalBboxTime += metrics.bboxTimeMs;
-            totalReorderTime += metrics.reorderTimeMs;
-            minTime = std::min(minTime, metrics.totalTimeMs);
-            maxTime = std::max(maxTime, metrics.totalTimeMs);
-            totalPotentialEnergy += potentialEnergy;
-            totalKineticEnergy += kineticEnergy;
-        }
-
-        potentialEnergyAvg = totalPotentialEnergy / steps;
-        kineticEnergyAvg = totalKineticEnergy / steps;
-        totalEnergyAvg = potentialEnergyAvg + kineticEnergyAvg;
-
-        std::cout << "Simulation complete." << std::endl;
-        std::cout << "Performance Summary:" << std::endl;
-        std::cout << "  Average time per step: " << std::fixed << std::setprecision(2) << totalTime / steps << " ms" << std::endl;
-        std::cout << "  Min time: " << std::fixed << std::setprecision(2) << minTime << " ms" << std::endl;
-        std::cout << "  Max time: " << std::fixed << std::setprecision(2) << maxTime << " ms" << std::endl;
-        std::cout << "  Build tree: " << std::fixed << std::setprecision(2) << totalBuildTime / steps << " ms" << std::endl;
-        std::cout << "  Bounding box: " << std::fixed << std::setprecision(2) << totalBboxTime / steps << " ms" << std::endl;
-        std::cout << "  Compute forces: " << std::fixed << std::setprecision(2) << totalForceTime / steps << " ms" << std::endl;
-        if (useSFC)
-        {
-            std::cout << "  Reordering: " << std::fixed << std::setprecision(2) << totalReorderTime / steps << " ms" << std::endl;
-        }
-        std::cout << "Average Energy Values:" << std::endl;
-        std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
-        std::cout << "  Kinetic Energy:   " << std::scientific << std::setprecision(6) << kineticEnergyAvg << std::endl;
-        std::cout << "  Total Energy:     " << std::scientific << std::setprecision(6) << totalEnergyAvg << std::endl;
-
-        if (useSFC && reorderingStrategy.getOptimalFrequency() > 0)
-        {
-            std::cout << "SFC Configuration:" << std::endl;
-            std::cout << "  Optimal reorder freq: " << reorderingStrategy.getOptimalFrequency() << std::endl;
-            std::cout << "  Degradation rate: " << std::fixed << std::setprecision(6)
-                      << reorderingStrategy.getDegradationRate() << " ms/s" << std::endl;
-        }
+        printSummary(numIterations, calculateEnergy);
     }
 
     float getTotalTime() const { return metrics.totalTimeMs; }
@@ -1561,13 +1533,13 @@ public:
     int getBlockSize() const { return g_blockSize; }
     int getNumBodies() const { return nBodies; }
     sfc::CurveType getCurveType() const { return curveType; }
-    bool isDynamicReordering() const { return true; }
+    bool isDynamicReordering() const { return useDynamicReordering; }
     double getTheta() const { return g_theta; }
     const char *getSortType() const { return useSFC ? (curveType == sfc::CurveType::MORTON ? "MORTON" : "HILBERT") : "NONE"; }
     float getTreeBuildTime() const { return metrics.octreeTimeMs; }
     float getSortTime() const { return metrics.reorderTimeMs; }
 
-    void printSummary(int steps)
+    void printSummary(int steps, bool calculateEnergy)
     {
         double totalTime = metrics.totalTimeMs;
         double totalBuildTime = metrics.octreeTimeMs;
@@ -1576,30 +1548,34 @@ public:
         double totalReorderTime = metrics.reorderTimeMs;
 
         std::cout << "Performance Summary:" << std::endl;
-        std::cout << "  Average time per step: " << std::fixed << std::setprecision(2) << totalTime / steps << " ms" << std::endl;
-        std::cout << "  Min time: " << std::fixed << std::setprecision(2) << minTimeMs << " ms" << std::endl;
-        std::cout << "  Max time: " << std::fixed << std::setprecision(2) << maxTimeMs << " ms" << std::endl;
-        std::cout << "  Build tree: " << std::fixed << std::setprecision(2) << totalBuildTime / steps << " ms" << std::endl;
-        std::cout << "  Bounding box: " << std::fixed << std::setprecision(2) << totalBboxTime / steps << " ms" << std::endl;
-        std::cout << "  Compute forces: " << std::fixed << std::setprecision(2) << totalForceTime / steps << " ms" << std::endl;
+        std::cout << "  Average time per step: " << std::fixed << std::setprecision(10) << totalTime / steps << " ms" << std::endl;
+        std::cout << "  Min time: " << std::fixed << std::setprecision(10) << minTimeMs << " ms" << std::endl;
+        std::cout << "  Max time: " << std::fixed << std::setprecision(10) << maxTimeMs << " ms" << std::endl;
+        std::cout << "  Build tree: " << std::fixed << std::setprecision(10) << totalBuildTime / steps << " ms" << std::endl;
+        std::cout << "  Bounding box: " << std::fixed << std::setprecision(10) << totalBboxTime / steps << " ms" << std::endl;
+        std::cout << "  Compute forces: " << std::fixed << std::setprecision(10) << totalForceTime / steps << " ms" << std::endl;
         if (useSFC)
         {
-            std::cout << "  Reordering: " << std::fixed << std::setprecision(2) << totalReorderTime / steps << " ms" << std::endl;
+            std::cout << "  Reordering: " << std::fixed << std::setprecision(10) << totalReorderTime / steps << " ms" << std::endl;
         }
-        std::cout << "Average Energy Values:" << std::endl;
-        std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
-        std::cout << "  Kinetic Energy:   " << std::scientific << std::setprecision(6) << kineticEnergyAvg << std::endl;
-        std::cout << "  Total Energy:     " << std::scientific << std::setprecision(6) << totalEnergyAvg << std::endl;
+        
+        if (calculateEnergy)
+        {
+            std::cout << "Average Energy Values:" << std::endl;
+            std::cout << "  Potential Energy: " << std::scientific << std::setprecision(6) << potentialEnergyAvg << std::endl;
+            std::cout << "  Kinetic Energy:   " << std::scientific << std::setprecision(6) << kineticEnergyAvg << std::endl;
+            std::cout << "  Total Energy:     " << std::scientific << std::setprecision(6) << totalEnergyAvg << std::endl;
+        }
 
         if (useSFC)
         {
             std::cout << "SFC Configuration:" << std::endl;
+            std::cout << "  Fixed reordering: " << (reorderingStrategy.isFixedReordering() ? "Yes" : "No") << std::endl;
             std::cout << "  Optimal reorder freq: " << reorderingStrategy.getOptimalFrequency() << std::endl;
-            std::cout << "  Degradation rate: " << std::fixed << std::setprecision(6)
-                      << reorderingStrategy.getDegradationRate() << " ms/s" << std::endl;
-            std::cout << "  Performance ratio: " << std::fixed << std::setprecision(3)
-                      << reorderingStrategy.getPerformanceRatio() << std::endl;
-            std::cout << "  Performance plateau: " << (reorderingStrategy.isPerformancePlateau() ? "yes" : "no") << std::endl;
+            if (!reorderingStrategy.isFixedReordering()) {
+                std::cout << "  Degradation rate: " << std::fixed << std::setprecision(6)
+                          << reorderingStrategy.getDegradationRate() << " ms/s" << std::endl;
+            }
         }
     }
 };
@@ -1611,6 +1587,7 @@ int main(int argc, char **argv)
     parser.add_argument("n", "Number of bodies", 10000);
     parser.add_flag("nosfc", "Disable Space-Filling Curve ordering");
     parser.add_argument("freq", "Reordering frequency for fixed mode", 10);
+    parser.add_argument("fixreorder", "Use fixed reordering frequency (1=yes, 0=no)", 0);
     parser.add_argument("dist", "Body distribution (galaxy, solar, uniform, random)", std::string("galaxy"));
     parser.add_argument("mass", "Mass distribution (uniform, normal)", std::string("normal"));
     parser.add_argument("seed", "Random seed", 42);
@@ -1621,7 +1598,7 @@ int main(int argc, char **argv)
     parser.add_argument("sm", "Shared memory size per block (bytes, 0=auto)", 0);
     parser.add_argument("leaf", "Maximum bodies per leaf node", 1);
     parser.add_argument("l", "Domain size L for periodic boundary conditions", DEFAULT_DOMAIN_SIZE);
-    parser.add_flag("energy", "Calculate system energy");
+    parser.add_argument("energy", "Calculate system energy (1=yes, 0=no)", 1);
     
     // Parse command line arguments
     try {
@@ -1635,6 +1612,13 @@ int main(int argc, char **argv)
     // Extract parsed arguments
     int nBodies = parser.get<int>("n");
     bool useSFC = !parser.get<bool>("nosfc");
+    int reorderFreq = parser.get<int>("freq");
+    bool useFixedReordering = parser.get<int>("fixreorder") != 0;
+    int numIterations = parser.get<int>("s");
+    int blockSize = parser.get<int>("block");
+    double theta = parser.get<double>("theta");
+    double domainSize = parser.get<double>("l");
+    bool calculateEnergy = parser.get<int>("energy") != 0;
     
     // Parse distribution type
     std::string distStr = parser.get<std::string>("dist");
@@ -1663,16 +1647,29 @@ int main(int argc, char **argv)
         curveType = sfc::CurveType::HILBERT;
     }
     
-    int numIterations = parser.get<int>("s");
-    int blockSize = parser.get<int>("block");
-    double theta = parser.get<double>("theta");
-    double domainSize = parser.get<double>("l");
-    
-    bool useDynamicReordering = true;
+    // Set dynamic reordering based on fixed reordering parameter
+    bool useDynamicReordering = useSFC && !useFixedReordering;
 
     g_blockSize = blockSize;
     g_theta = theta;
     g_domainSize = domainSize;
+
+    // Print simulation parameters
+    std::cout << "BarnesHut GPU Simulation" << std::endl;
+    std::cout << "Bodies: " << nBodies << std::endl;
+    std::cout << "Iterations: " << numIterations << std::endl;
+    std::cout << "Block size: " << blockSize << std::endl;
+    std::cout << "Theta: " << theta << std::endl;
+    std::cout << "Domain size: " << std::scientific << domainSize << std::endl;
+    std::cout << "Calculate energy: " << (calculateEnergy ? "Yes" : "No") << std::endl;
+    std::cout << "Using SFC: " << (useSFC ? "Yes" : "No") << std::endl;
+    if (useSFC) {
+        std::cout << "Curve type: " << (curveType == sfc::CurveType::HILBERT ? "HILBERT" : "MORTON") << std::endl;
+        std::cout << "Fixed reordering: " << (useFixedReordering ? "Yes" : "No") << std::endl;
+        if (useFixedReordering) {
+            std::cout << "Reordering frequency: " << reorderFreq << std::endl;
+        }
+    }
 
     SFCBarnesHutGPU simulation(
         nBodies,
@@ -1683,9 +1680,11 @@ int main(int argc, char **argv)
         useSFC,
         curveType,
         useDynamicReordering,
-        seed);
+        seed,
+        useFixedReordering,
+        reorderFreq);
 
-    simulation.runSimulation(numIterations);
+    simulation.runSimulation(numIterations, calculateEnergy);
 
     return 0;
 }
